@@ -5,6 +5,7 @@ use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
 use xm_relay_repository as repo;
+use xm_relay_security as sec;
 
 #[derive(Parser)]
 #[command(
@@ -37,6 +38,13 @@ enum Command {
 enum ProjectCommand {
     /// Show branch, HEAD, working tree status and untracked files
     Inspect {
+        /// Defaults to the current directory
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Scan changes, untracked files and instructions for likely secrets (exit 2 if any)
+    Scan {
         /// Defaults to the current directory
         path: Option<std::path::PathBuf>,
         #[arg(long)]
@@ -308,12 +316,127 @@ fn project_instructions(path: Option<std::path::PathBuf>, json: bool) -> Result<
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct ScanHit {
+    location: String,
+    what: String,
+    line: Option<usize>,
+    fingerprint: Option<String>,
+}
+
+/// Best-effort and read-only. Reports locations and kinds, never secret values.
+fn project_scan(path: Option<std::path::PathBuf>, json: bool) -> Result<bool, String> {
+    let path = path.unwrap_or_else(|| std::path::PathBuf::from("."));
+    let st = repo::inspect(&path).map_err(|e| e.to_string())?;
+    let root = std::path::PathBuf::from(st.root.clone().ok_or("not inside a Git repository")?);
+    let mut hits: Vec<ScanHit> = Vec::new();
+    let mut scanned = 0usize;
+
+    let mut names: Vec<&str> = st.untracked.iter().map(|f| f.path.as_str()).collect();
+    names.extend(
+        st.staged
+            .iter()
+            .chain(&st.unstaged)
+            .map(|f| f.path.as_str()),
+    );
+    names.sort();
+    names.dedup();
+    for n in names {
+        if let Some(s) = sec::sensitive_file(n) {
+            hits.push(ScanHit {
+                location: n.into(),
+                what: format!("sensitive file name ({})", s.reason),
+                line: None,
+                fingerprint: None,
+            });
+        }
+    }
+    for f in &st.untracked {
+        let Some(size) = f.size else { continue };
+        if f.is_symlink || size > 5 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(root.join(&f.path)) else {
+            continue;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        scanned += 1;
+        for x in sec::scan_text(&text) {
+            hits.push(ScanHit {
+                location: f.path.clone(),
+                what: x.kind.as_str().into(),
+                line: Some(x.line),
+                fingerprint: Some(x.fingerprint),
+            });
+        }
+    }
+    let patch = repo::tracked_patch(&root).map_err(|e| e.to_string())?;
+    scanned += 1;
+    for x in sec::scan_patch(&String::from_utf8_lossy(&patch)) {
+        hits.push(ScanHit {
+            location: format!("{} (added lines in tracked diff)", x.path),
+            what: x.finding.kind.as_str().into(),
+            line: None,
+            fingerprint: Some(x.finding.fingerprint),
+        });
+    }
+    for f in repo::discover_instructions(&root).files {
+        if let Some(text) = &f.content {
+            scanned += 1;
+            for x in sec::scan_text(text) {
+                hits.push(ScanHit {
+                    location: f.path.clone(),
+                    what: x.kind.as_str().into(),
+                    line: Some(x.line),
+                    fingerprint: Some(x.fingerprint),
+                });
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&hits).map_err(|e| e.to_string())?
+        );
+    } else {
+        for h in &hits {
+            let line = h.line.map(|l| format!(":{l}")).unwrap_or_default();
+            println!(
+                "{}{line}  {}{}",
+                h.location,
+                h.what,
+                h.fingerprint
+                    .as_ref()
+                    .map(|f| format!("  [{f}]"))
+                    .unwrap_or_default()
+            );
+        }
+        println!("{} finding(s) in {} scanned source(s). Heuristic scan: absence of findings is not proof of safety.", hits.len(), scanned);
+    }
+    Ok(!hits.is_empty())
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
         Command::Project {
             command: ProjectCommand::Inspect { path, json },
         } => project_inspect(path, json),
+        Command::Project {
+            command: ProjectCommand::Scan { path, json },
+        } => {
+            return match project_scan(path, json) {
+                Ok(false) => ExitCode::SUCCESS,
+                Ok(true) => ExitCode::from(2),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::Project {
             command: ProjectCommand::Instructions { path, json },
         } => project_instructions(path, json),

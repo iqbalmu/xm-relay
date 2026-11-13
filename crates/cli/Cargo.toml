@@ -9,6 +9,8 @@ xm-relay-core.workspace = true
 xm-relay-adapter-opencode.workspace = true
 xm-relay-adapter-omp.workspace = true
 xm-relay-repository.workspace = true
+xm-relay-security.workspace = true
 xm-relay-adapter-antigravity.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
