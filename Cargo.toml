@@ -1,11 +1,14 @@
 [workspace]
 resolver = "2"
+default-members = ["crates/cli"]
 members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adapters/omp", "crates/adapters/antigravity", "crates/repository", "crates/security", "crates/checkpoint", "crates/handoff", "crates/tui"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/iqbalmu/xm-relay"
+homepage = "https://github.com/iqbalmu/xm-relay"
 
 [workspace.dependencies]
 xm-relay-core = { path = "crates/core" }

@@ -3,6 +3,9 @@ name = "xm-relay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Local-first, cross-agent CLI/TUI tool for verifiable AI coding session handoffs"
 
 [dependencies]
 xm-relay-core.workspace = true
@@ -17,3 +20,8 @@ xm-relay-adapter-antigravity.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
