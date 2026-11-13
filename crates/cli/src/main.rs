@@ -64,6 +64,12 @@ enum Command {
         #[arg(short, long)]
         global: bool,
     },
+    /// Update xm-relay to the latest version from GitHub
+    Update {
+        /// Specific release tag to install (defaults to latest)
+        #[arg(long, default_value = "latest")]
+        version: String,
+    },
     /// Show recent handoff history
     History {
         #[arg(long)]
@@ -1068,9 +1074,52 @@ fn continue_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
+fn update_cmd(version: &str) -> Result<(), String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/bin")))
+        .ok_or_else(|| "cannot determine target installation directory".to_string())?;
+
+    println!(
+        "Updating xm-relay in {} (target version: {})...",
+        exe_dir.display(),
+        version
+    );
+    let url = "https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh";
+    let script = std::process::Command::new("curl")
+        .args(["-fsSL", url])
+        .output()
+        .map_err(|e| format!("failed to run 'curl': {e}"))?;
+    if !script.status.success() {
+        return Err(format!("failed to download installer from {url}"));
+    }
+
+    let mut child = std::process::Command::new("sh")
+        .env("XM_RELAY_INSTALL_DIR", &exe_dir)
+        .env("XM_RELAY_VERSION", version)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn 'sh': {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(&script.stdout)
+            .map_err(|e| format!("failed to pipe installer script: {e}"))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed waiting for installer: {e}"))?;
+    if !status.success() {
+        return Err("installer exited with a non-zero status".into());
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
+        Command::Update { version } => update_cmd(&version),
         Command::Checkpoint { command } => checkpoint_cmd(command),
         Command::Handoff { command } => {
             return match handoff_cmd(command) {

@@ -39,9 +39,13 @@ curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | 
 ```
 
 <details>
-<summary>Custom install directory or version</summary>
+<summary>Updating or customizing install directory</summary>
 
 ```bash
+# Self-update to the latest release in-place:
+xm-relay update
+
+# Or customize the target directory during install:
 curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | XM_RELAY_INSTALL_DIR=/usr/local/bin sh
 ```
 </details>
@@ -117,6 +121,7 @@ Every subcommand supports `--help` and most provide `--json` for scripting.
 
 | Command | Description |
 |---|---|
+| `xm-relay update` | Self-update `xm-relay` in-place to the latest GitHub release |
 | `xm-relay agents` | Detect installed coding agents and their session data paths |
 | `xm-relay status [path]` | Summary of detected agents, live Git state, checkpoints, and handoffs |
 | `xm-relay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`) |
