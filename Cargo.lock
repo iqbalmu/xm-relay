@@ -496,6 +496,7 @@ dependencies = [
  "xm-relay-adapter-opencode",
  "xm-relay-checkpoint",
  "xm-relay-core",
+ "xm-relay-handoff",
  "xm-relay-repository",
  "xm-relay-security",
 ]
@@ -542,6 +543,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "xm-relay-handoff"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xm-relay-core",
+ "xm-relay-repository",
+ "xm-relay-security",
 ]
 
 [[package]]

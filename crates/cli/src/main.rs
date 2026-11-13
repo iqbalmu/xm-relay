@@ -5,6 +5,7 @@ use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
 use xm_relay_checkpoint as ckpt;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
+use xm_relay_handoff as ho;
 use xm_relay_repository as repo;
 use xm_relay_security as sec;
 
@@ -32,6 +33,28 @@ enum Command {
     Checkpoint {
         #[command(subcommand)]
         command: CheckpointCommand,
+    },
+    /// Build, inspect, and validate portable handoff packages
+    Handoff {
+        #[command(subcommand)]
+        command: HandoffCommand,
+    },
+    /// Produce the target-agent preflight continuation prompt (exits 2 if blocked/failed)
+    Continue {
+        handoff_id: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+    },
+    /// Show recent handoff history
+    History {
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// Discover and inspect agent sessions
     Sessions {
@@ -98,6 +121,50 @@ enum CheckpointCommand {
         checkpoint_id: String,
         #[arg(long)]
         path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HandoffCommand {
+    /// Create a portable handoff package from an agent session
+    Create {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List stored handoff packages
+    List {
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect a handoff package
+    Inspect {
+        handoff_id: String,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-validate a handoff package against the live repository
+    Validate {
+        handoff_id: String,
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
         #[arg(long)]
         store: Option<std::path::PathBuf>,
         #[arg(long)]
@@ -604,10 +671,234 @@ fn checkpoint_cmd(cmd: CheckpointCommand) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_agent_id(name: &str) -> Result<AgentId, String> {
+    AgentId::ALL
+        .into_iter()
+        .find(|a| a.as_str() == name)
+        .ok_or_else(|| format!("unknown agent '{name}' (valid: opencode, antigravity-cli, omp)"))
+}
+
+fn handoff_store_dir(custom: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    custom
+        .or_else(ho::default_store_dir)
+        .ok_or_else(|| "cannot resolve handoff store directory".into())
+}
+
+fn print_validation(d: &ho::HandoffDetail) {
+    let m = &d.manifest;
+    let v = &d.validation;
+    println!("handoff     {}", m.handoff_id);
+    println!(
+        "agents      {} -> {} (session {})",
+        m.source_agent.as_str(),
+        m.target_agent.as_str(),
+        m.source_session_id
+    );
+    println!("project     {}", m.project_root);
+    println!(
+        "confidence  {:?} ({})",
+        m.confidence.overall, m.confidence.reason
+    );
+    println!(
+        "preflight   {:?} (checksums={})",
+        v.status,
+        if v.checksums_valid {
+            "VALID"
+        } else {
+            "INVALID"
+        }
+    );
+    for c in &v.checklist {
+        println!(
+            "  [{}] {} ({})",
+            if c.checked { "x" } else { " " },
+            c.label,
+            c.detail
+        );
+    }
+    for c in &v.conflicts {
+        println!(
+            "  ! CONFLICT {} [{:?}, critical={}]: {}",
+            c.id, c.kind, c.critical, c.description
+        );
+    }
+    for w in &v.warnings {
+        println!("  ! warning: {w}");
+    }
+}
+
+fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
+    match cmd {
+        HandoffCommand::Create {
+            session,
+            from,
+            to,
+            project,
+            store,
+            json,
+        } => {
+            let target = parse_agent_id(&to)?;
+            let sess = select(from)?
+                .iter()
+                .find_map(|a| a.read_session(&session).ok())
+                .ok_or_else(|| format!("session '{session}' not found"))?;
+            let d = ho::create_handoff(
+                &sess,
+                target,
+                project.as_deref(),
+                &handoff_store_dir(store)?,
+            )
+            .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?
+                );
+            } else {
+                print_validation(&d);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        HandoffCommand::List { store, json } => {
+            let list = ho::list_handoffs(&handoff_store_dir(store)?).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?
+                );
+            } else {
+                for m in list {
+                    println!(
+                        "{}  {}  {} -> {}  conf={:?}  {}",
+                        m.handoff_id,
+                        m.created_at,
+                        m.source_agent.as_str(),
+                        m.target_agent.as_str(),
+                        m.confidence.overall,
+                        m.project_root
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        HandoffCommand::Inspect {
+            handoff_id,
+            store,
+            json,
+        } => {
+            let d = ho::validate_handoff(&handoff_store_dir(store)?, &handoff_id, None)
+                .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?
+                );
+            } else {
+                print_validation(&d);
+                println!(
+                    "
+{}",
+                    d.context_md.trim()
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        HandoffCommand::Validate {
+            handoff_id,
+            project,
+            store,
+            json,
+        } => {
+            let d =
+                ho::validate_handoff(&handoff_store_dir(store)?, &handoff_id, project.as_deref())
+                    .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?
+                );
+            } else {
+                print_validation(&d);
+            }
+            let code = match d.validation.status {
+                ho::PreflightStatus::Passed | ho::PreflightStatus::PassedWithWarnings => {
+                    ExitCode::SUCCESS
+                }
+                ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed => ExitCode::from(2),
+            };
+            Ok(code)
+        }
+    }
+}
+
+fn continue_cmd(
+    id: &str,
+    to: Option<String>,
+    project: Option<std::path::PathBuf>,
+    store: Option<std::path::PathBuf>,
+) -> Result<ExitCode, String> {
+    let sdir = handoff_store_dir(store)?;
+    let mut d = ho::validate_handoff(&sdir, id, project.as_deref()).map_err(|e| e.to_string())?;
+    if let Some(t) = to {
+        d.manifest.target_agent = parse_agent_id(&t)?;
+    }
+    if matches!(
+        d.validation.status,
+        ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed
+    ) {
+        eprintln!(
+            "BLOCKED: handoff {} failed preflight ({:?}). Resolve conflicts before continuing:",
+            id, d.validation.status
+        );
+        for c in &d.validation.conflicts {
+            eprintln!("  - {}: {}", c.id, c.description);
+        }
+        for e in &d.validation.checksum_errors {
+            eprintln!("  - checksum error: {e}");
+        }
+        return Ok(ExitCode::from(2));
+    }
+    let pkg_dir = sdir.join(id);
+    println!("{}", ho::generate_continuation_prompt(&d, &pkg_dir));
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
         Command::Checkpoint { command } => checkpoint_cmd(command),
+        Command::Handoff { command } => {
+            return match handoff_cmd(command) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::Continue {
+            handoff_id,
+            to,
+            project,
+            store,
+        } => {
+            return match continue_cmd(&handoff_id, to, project, store) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::History { store, json } => {
+            return match handoff_cmd(HandoffCommand::List { store, json }) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Project {
             command: ProjectCommand::Inspect { path, json },
         } => project_inspect(path, json),
