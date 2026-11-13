@@ -212,6 +212,7 @@ struct Builder {
 }
 
 impl Builder {
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         native_id: &str,

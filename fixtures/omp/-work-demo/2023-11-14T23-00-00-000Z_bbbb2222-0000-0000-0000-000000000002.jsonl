@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"bbbb2222-0000-0000-0000-000000000002","timestamp":"2023-11-14T23:00:00.000Z","cwd":"/work/demo","title":"Weird"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"2023-11-14T23:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"hologram","id":"h1","timestamp":"2023-11-14T23:00:02.000Z"}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2023-11-14T23:00:03.000Z","message":{"role":"alien","content":[]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2023-11-14T23:00:04.000Z","message":{"role":"assistant","content":[{"type":"mystery"}]}}
+not json

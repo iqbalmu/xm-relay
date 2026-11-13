@@ -1,0 +1,13 @@
+{"type":"session","version":3,"id":"aaaa1111-0000-0000-0000-000000000001","timestamp":"2023-11-14T22:13:20.000Z","cwd":"/work/demo"}
+{"type":"title","v":1,"title":"Add login endpoint","source":"auto","updatedAt":"2023-11-14T22:13:21.000Z"}
+{"type":"model_change","id":"e1","parentId":null,"timestamp":"2023-11-14T22:13:21.000Z","model":"demo/model-1","role":"default"}
+{"type":"message","id":"m1","parentId":"e1","timestamp":"2023-11-14T22:13:22.000Z","message":{"role":"user","content":[{"type":"text","text":"Add a login endpoint"}],"timestamp":1700000002000}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2023-11-14T22:13:23.000Z","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"Creating the endpoint."},{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"src/login.rs","content":"fn login(){}"}},{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"cargo test"}},{"type":"toolCall","id":"c3","name":"edit","arguments":{"path":"src/x.rs"}},{"type":"toolCall","id":"c4","name":"read","arguments":{"path":"src/y.rs"}}]}}
+{"type":"custom","id":"x1","parentId":"m2","timestamp":"2023-11-14T22:13:23.500Z","customType":"tool_execution_start","data":{"toolCallId":"c1"}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2023-11-14T22:13:24.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"write","isError":false,"content":[{"type":"text","text":"ok"}]}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2023-11-14T22:13:25.000Z","message":{"role":"toolResult","toolCallId":"c2","toolName":"bash","isError":true,"content":[{"type":"text","text":"1 failed"}]}}
+{"type":"message","id":"m5","parentId":"m4","timestamp":"2023-11-14T22:13:26.000Z","message":{"role":"toolResult","toolCallId":"c3","toolName":"edit","isError":true,"content":[{"type":"text","text":"no match"}]}}
+{"type":"compaction","id":"k1","parentId":"m5","timestamp":"2023-11-14T22:13:27.000Z","summary":"Login endpoint written; tests failing.","tokensBefore":9000,"tokensAfter":800,"firstKeptEntryId":"m4","method":"summary","preserveData":{"big":"ignored"}}
+{"type":"message","id":"m6","parentId":"k1","timestamp":"2023-11-14T22:13:28.000Z","message":{"role":"assistant","stopReason":"error","errorMessage":"rate limit reached","content":[]}}
+{"type":"message","id":"m7","parentId":"m6","timestamp":"2023-11-14T22:13:29.000Z","message":{"role":"bashExecution","command":"ls","exitCode":0,"output":"a","cancelled":false}}
+{"type":"thinking_level_change","id":"t1","parentId":"m7","timestamp":"2023-11-14T22:13:30.000Z"}

@@ -381,7 +381,16 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "serde_json",
+ "xm-relay-adapter-omp",
  "xm-relay-adapter-opencode",
+ "xm-relay-core",
+]
+
+[[package]]
+name = "xm-relay-adapter-omp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
  "xm-relay-core",
 ]
 

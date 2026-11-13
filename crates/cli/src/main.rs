@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
+use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
 
@@ -27,7 +28,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SessionsCommand {
-    /// List sessions, newest first
+    /// List sessions, newest first (all agents unless --agent is given)
     List {
         #[arg(long)]
         agent: Option<String>,
@@ -37,8 +38,9 @@ enum SessionsCommand {
     /// Show a normalised session and its parse report
     Inspect {
         session_id: String,
-        #[arg(long, default_value = "opencode")]
-        agent: String,
+        /// Search all agents when omitted
+        #[arg(long)]
+        agent: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -49,58 +51,135 @@ fn adapters() -> Vec<Box<dyn AgentAdapter>> {
     if let Some(p) = OpenCodeAdapter::default_db_path() {
         v.push(Box::new(OpenCodeAdapter::new(p)));
     }
+    if let Some(p) = OmpAdapter::default_sessions_dir() {
+        v.push(Box::new(OmpAdapter::new(p)));
+    }
     v
 }
 
-fn find(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
-    adapters()
-        .into_iter()
-        .find(|a| a.id().as_str() == agent)
-        .ok_or_else(|| format!("no adapter for '{agent}' yet (implemented: opencode)"))
+fn select(agent: Option<String>) -> Result<Vec<Box<dyn AgentAdapter>>, String> {
+    match agent {
+        None => Ok(adapters()),
+        Some(name) => {
+            let found: Vec<_> = adapters()
+                .into_iter()
+                .filter(|a| a.id().as_str() == name)
+                .collect();
+            if found.is_empty() {
+                Err(format!(
+                    "no adapter for '{name}' yet (implemented: opencode, omp)"
+                ))
+            } else {
+                Ok(found)
+            }
+        }
+    }
 }
 
-fn run(cli: Cli) -> Result<(), String> {
-    match cli.command {
-        Command::Agents => {
-            for id in AgentId::ALL {
-                match adapters().into_iter().find(|a| a.id() == id) {
-                    Some(a) => {
-                        let i = a.detect().map_err(|e| e.to_string())?;
-                        let state = if i.available { "found" } else { "not found" };
-                        println!(
-                            "{:<16} {state} version={} {}",
-                            id.as_str(),
-                            i.version.as_deref().unwrap_or("unknown"),
-                            i.data_path
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default()
-                        );
-                    }
-                    None => println!("{:<16} adapter not implemented", id.as_str()),
-                }
-            }
-        }
-        Command::Sessions {
-            command: SessionsCommand::List { agent, limit },
-        } => {
-            let agent = agent.unwrap_or_else(|| "opencode".into());
-            let list = find(&agent)?
-                .list_sessions(&SessionFilter {
-                    limit: Some(limit),
-                    ..Default::default()
-                })
-                .map_err(|e| e.to_string())?;
-            for s in list {
+fn agents() -> Result<(), String> {
+    for id in AgentId::ALL {
+        match adapters().into_iter().find(|a| a.id() == id) {
+            Some(a) => {
+                let i = a.detect().map_err(|e| e.to_string())?;
                 println!(
-                    "{}  {}  {:>5} msgs  {}  {}",
-                    s.id,
-                    s.updated_at.unwrap_or_default(),
-                    s.event_count,
-                    s.project_root.unwrap_or_default(),
-                    s.title.unwrap_or_default()
+                    "{:<16} {} version={} {}",
+                    id.as_str(),
+                    if i.available { "found" } else { "not found" },
+                    i.version.as_deref().unwrap_or("unknown"),
+                    i.data_path
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
                 );
             }
+            None => println!("{:<16} adapter not implemented", id.as_str()),
         }
+    }
+    Ok(())
+}
+
+fn list(agent: Option<String>, limit: usize) -> Result<(), String> {
+    let filter = SessionFilter {
+        limit: Some(limit),
+        ..Default::default()
+    };
+    let mut all = Vec::new();
+    for a in select(agent)? {
+        match a.list_sessions(&filter) {
+            Ok(l) => all.extend(l),
+            Err(e) => eprintln!("warning: {}: {e}", a.id().as_str()),
+        }
+    }
+    all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    all.truncate(limit);
+    for s in all {
+        println!(
+            "{:<15} {}  {}  {:>5} ev  {}  {}",
+            s.agent.as_str(),
+            s.id,
+            s.updated_at.unwrap_or_default(),
+            s.event_count,
+            s.project_root.unwrap_or_default(),
+            s.title.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn inspect(id: &str, agent: Option<String>, json: bool) -> Result<(), String> {
+    let s = select(agent)?
+        .iter()
+        .find_map(|a| a.read_session(id).ok())
+        .ok_or_else(|| format!("session '{id}' not found"))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    let r = &s.parse_report;
+    println!(
+        "session   {}\nagent     {} (version {})",
+        s.id,
+        s.agent.id.as_str(),
+        s.agent.version.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "project   {}",
+        s.project
+            .as_ref()
+            .map(|p| p.root.as_str())
+            .unwrap_or("unknown")
+    );
+    println!("events    {} normalised", s.events.len());
+    println!(
+        "parse     total={} parsed={} unsupported={} errors={}",
+        r.total_events,
+        r.parsed_events,
+        r.unsupported_events(),
+        r.errors.len()
+    );
+    for u in &r.unsupported {
+        println!(
+            "  ! unsupported at {}: {:?} ({})",
+            u.position, u.native_kind, u.reason
+        );
+    }
+    for e in &r.errors {
+        println!("  ! error: {e}");
+    }
+    if r.is_lossy() {
+        println!("WARNING: parse is lossy; handoff confidence must be lowered");
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let result = match Cli::parse().command {
+        Command::Agents => agents(),
+        Command::Sessions {
+            command: SessionsCommand::List { agent, limit },
+        } => list(agent, limit),
         Command::Sessions {
             command:
                 SessionsCommand::Inspect {
@@ -108,58 +187,9 @@ fn run(cli: Cli) -> Result<(), String> {
                     agent,
                     json,
                 },
-        } => {
-            let s = find(&agent)?
-                .read_session(&session_id)
-                .map_err(|e| e.to_string())?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?
-                );
-            } else {
-                let r = &s.parse_report;
-                println!(
-                    "session   {}\nagent     {} (version {})",
-                    s.id,
-                    s.agent.id.as_str(),
-                    s.agent.version.as_deref().unwrap_or("unknown")
-                );
-                println!(
-                    "project   {}",
-                    s.project
-                        .as_ref()
-                        .map(|p| p.root.as_str())
-                        .unwrap_or("unknown")
-                );
-                println!("events    {} normalised", s.events.len());
-                println!(
-                    "parse     total={} parsed={} unsupported={} errors={}",
-                    r.total_events,
-                    r.parsed_events,
-                    r.unsupported_events(),
-                    r.errors.len()
-                );
-                for u in &r.unsupported {
-                    println!(
-                        "  ! unsupported at {}: {:?} ({})",
-                        u.position, u.native_kind, u.reason
-                    );
-                }
-                for e in &r.errors {
-                    println!("  ! error: {e}");
-                }
-                if r.is_lossy() {
-                    println!("WARNING: parse is lossy; handoff confidence must be lowered");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn main() -> ExitCode {
-    match run(Cli::parse()) {
+        } => inspect(&session_id, agent, json),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
