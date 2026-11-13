@@ -56,7 +56,7 @@ pub fn select_menu(
             ResetColor,
             Print(prompt),
             SetForegroundColor(Color::DarkGrey),
-            Print(" (↑/↓ pilih, Enter lanjut, Esc/q batal)\r\n"),
+            Print(" (↑/↓ move, Enter select, Esc/q cancel)\r\n"),
             ResetColor
         );
         let mut lines = 1usize;
@@ -212,19 +212,19 @@ pub fn pick_session(
         }
 
         let scope_badge = if global {
-            "Global (Semua Direktori)".to_string()
+            "Global (All Directories)".to_string()
         } else {
             let short_dir = short_project_name(active_root.as_deref().unwrap_or("."));
-            format!("Direktori Aktif ({short_dir})")
+            format!("Active Directory ({short_dir})")
         };
-        let agent_badge = agent_filter.map(|a| a.as_str()).unwrap_or("Semua Agent");
+        let agent_badge = agent_filter.map(|a| a.as_str()).unwrap_or("All Agents");
 
         let _ = execute!(
             stdout,
             SetForegroundColor(Color::Cyan),
             Print("? "),
             ResetColor,
-            Print("Pilih sesi yang ingin dipindahkan "),
+            Print("Select a session to hand off "),
             SetForegroundColor(Color::Yellow),
             Print(format!("[{scope_badge} • {agent_badge}]")),
             ResetColor,
@@ -237,14 +237,14 @@ pub fn pick_session(
             let _ = execute!(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
-                Print("  Cari: "),
+                Print("  Search: "),
                 SetForegroundColor(Color::White),
                 Print(format!("{search_query}{cursor}")),
                 SetForegroundColor(Color::DarkGrey),
                 Print(if search_mode {
-                    "  (Enter selesai cari, Esc hapus)\r\n"
+                    "  (Enter to finish search, Esc to clear)\r\n"
                 } else {
-                    "  ([/] ubah pencarian)\r\n"
+                    "  ([/] to edit search)\r\n"
                 }),
                 ResetColor
             );
@@ -254,7 +254,7 @@ pub fn pick_session(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
                 Print(
-                    "  (↑/↓ pilih • Enter lanjut • [g] Dir/Global • [a] Filter Agent • [/] Cari • Esc batal)\r\n"
+                    "  (↑/↓ move • Enter select • [g] Scope: Dir/Global • [a] Filter Agent • [/] Search • Esc cancel)\r\n"
                 ),
                 ResetColor
             );
@@ -266,7 +266,7 @@ pub fn pick_session(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
                 Print(
-                    "    (Tidak ada sesi yang cocok — tekan [g] untuk cakupan Global atau [a] ganti agent)\r\n"
+                    "    (No matching sessions found — press [g] for Global scope or [a] to switch agent)\r\n"
                 ),
                 ResetColor
             );
@@ -284,7 +284,7 @@ pub fn pick_session(
                 let title = title_cache
                     .get(&(s.agent, s.id.clone()))
                     .map(String::as_str)
-                    .unwrap_or("(tanpa judul)");
+                    .unwrap_or("(untitled)");
                 let rel_time = s
                     .updated_at
                     .as_deref()
@@ -435,7 +435,11 @@ pub fn pick_session(
                 SetForegroundColor(Color::Green),
                 Print("✔ "),
                 ResetColor,
-                Print(format!("Sesi dipilih › [{}] {}\n", agent.as_str(), title))
+                Print(format!(
+                    "Selected session › [{}] {}\n",
+                    agent.as_str(),
+                    title
+                ))
             );
             Ok(Some((agent, id)))
         }
@@ -457,7 +461,7 @@ pub fn pick_target_agent(exclude: Option<AgentId>) -> Result<Option<AgentId>, St
             AgentId::Omp => "omp (Oh My Pi)".to_string(),
         })
         .collect();
-    match select_menu("Pindahkan sesi ke agent mana?", &labels, 0)? {
+    match select_menu("Select target agent to continue in", &labels, 0)? {
         Some(i) => Ok(Some(candidates[i])),
         None => Ok(None),
     }
@@ -467,7 +471,7 @@ pub fn pick_target_agent(exclude: Option<AgentId>) -> Result<Option<AgentId>, St
 pub fn pick_handoff_history(store: &Path) -> Result<Option<String>, String> {
     let list = ho::list_handoffs(store).map_err(|e| e.to_string())?;
     if list.is_empty() {
-        println!("Belum ada riwayat handoff yang tersimpan.");
+        println!("No stored handoff packages found yet.");
         return Ok(None);
     }
     let items: Vec<String> = list
@@ -492,16 +496,16 @@ pub fn pick_handoff_history(store: &Path) -> Result<Option<String>, String> {
         })
         .collect();
 
-    match select_menu("Pilih riwayat handoff", &items, 0)? {
+    match select_menu("Select a previous handoff package", &items, 0)? {
         Some(i) => Ok(Some(list[i].handoff_id.clone())),
         None => Ok(None),
     }
 }
 
 /// Display compact handoff summary and present the 3 post-handoff actions:
-/// 1. Copy prompt ke clipboard
-/// 2. Tampilkan isi prompt di layar
-/// 3. Buka langsung agent tujuan (Launch CLI)
+/// 1. Copy continuation prompt to clipboard
+/// 2. Print continuation prompt to screen
+/// 3. Launch target agent CLI directly in project directory
 pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Result<(), String> {
     let m = &detail.manifest;
     let v = &detail.validation;
@@ -513,17 +517,17 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
         m.source_agent.as_str(),
         m.target_agent.as_str()
     );
-    println!("  Proyek     : {}", m.project_root);
+    println!("  Project    : {}", m.project_root);
     println!(
         "  Confidence : {:?} ({})",
         m.confidence.overall, m.confidence.reason
     );
     println!("  Preflight  : {:?}", v.status);
     for c in &v.conflicts {
-        println!("  ! Konflik  : {} — {}", c.id, c.description);
+        println!("  ! Conflict : {} — {}", c.id, c.description);
     }
     for w in &v.warnings {
-        println!("  ! Info     : {w}");
+        println!("  ! Notice   : {w}");
     }
     println!();
 
@@ -532,7 +536,7 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
         ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed
     ) {
         return Err(format!(
-            "Handoff {} diblokir oleh preflight ({:?}). Selesaikan konflik terlebih dahulu.",
+            "Handoff {} blocked by preflight ({:?}). Resolve conflicts before continuing.",
             m.handoff_id, v.status
         ));
     }
@@ -542,17 +546,17 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
 
     let actions = vec![
         format!(
-            "Copy prompt ke clipboard (siap paste di {})",
+            "Copy continuation prompt to clipboard (ready to paste in {})",
             m.target_agent.as_str()
         ),
-        "Tampilkan isi prompt di layar".to_string(),
+        "Print continuation prompt to screen".to_string(),
         format!(
-            "Buka langsung {} di direktori proyek (Launch CLI)",
+            "Launch {} directly in project directory (with prompt)",
             m.target_agent.as_str()
         ),
     ];
 
-    let Some(action) = select_menu("Pilih langkah selanjutnya", &actions, 0)? else {
+    let Some(action) = select_menu("Select next step", &actions, 0)? else {
         return Ok(());
     };
 
@@ -560,7 +564,7 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
         0 => {
             let method = copy_to_clipboard(&prompt);
             println!(
-                "\n✓ Prompt berhasil disalin ke clipboard ({method})!\n  Silakan buka `{}` dan paste (Ctrl+V / Cmd+V).",
+                "\n✓ Continuation prompt copied to clipboard ({method})!\n  Open `{}` and paste (Ctrl+V / Cmd+V).",
                 m.target_agent.as_str()
             );
         }
@@ -653,7 +657,7 @@ pub fn launch_target_agent(
     let workdir = if dir.is_dir() { dir } else { Path::new(".") };
 
     println!(
-        "\n🚀 Membuka {} di {} (prompt juga sudah disalin ke clipboard)...",
+        "\n🚀 Launching {} in {} (prompt also copied to clipboard)...",
         target.as_str(),
         workdir.display()
     );
@@ -665,23 +669,23 @@ pub fn launch_target_agent(
             .arg(prompt)
             .arg(".")
             .status()
-            .map_err(|e| format!("gagal menjalankan `opencode`: {e}"))?,
+            .map_err(|e| format!("failed to launch `opencode`: {e}"))?,
         AgentId::AntigravityCli => Command::new("agy")
             .current_dir(workdir)
             .arg("-i")
             .arg(prompt)
             .status()
-            .map_err(|e| format!("gagal menjalankan `agy`: {e}"))?,
+            .map_err(|e| format!("failed to launch `agy`: {e}"))?,
         AgentId::Omp => Command::new("omp")
             .current_dir(workdir)
             .arg(prompt)
             .status()
-            .map_err(|e| format!("gagal menjalankan `omp`: {e}"))?,
+            .map_err(|e| format!("failed to launch `omp`: {e}"))?,
     };
 
     if !status.success() {
         return Err(format!(
-            "`{}` berhenti dengan status: {status}",
+            "`{}` exited with status: {status}",
             target.as_str()
         ));
     }
@@ -712,7 +716,7 @@ fn resolve_session_title(adapters: &[Box<dyn AgentAdapter>], s: &SessionSummary)
             }
         }
     }
-    format!("Sesi {}", &s.id[..s.id.len().min(8)])
+    format!("Session {}", &s.id[..s.id.len().min(8)])
 }
 
 fn clean_snippet(raw: &str, max_chars: usize) -> String {

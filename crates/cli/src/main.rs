@@ -1112,13 +1112,13 @@ fn update_cmd(version: &str) -> Result<(), String> {
 
 fn interactive_main() -> Result<ExitCode, String> {
     let main_items = vec![
-        "Pindahkan Sesi / Buat Handoff".to_string(),
-        "Riwayat Handoff Sebelumnya".to_string(),
-        "Keluar".to_string(),
+        "Hand Off a Session / Create Handoff".to_string(),
+        "Previous Handoff History".to_string(),
+        "Exit".to_string(),
     ];
 
     loop {
-        let Some(choice) = interactive::select_menu("xm-relay — Pilih aksi", &main_items, 0)?
+        let Some(choice) = interactive::select_menu("xm-relay — Select an action", &main_items, 0)?
         else {
             return Ok(ExitCode::SUCCESS);
         };
@@ -1138,7 +1138,7 @@ fn interactive_main() -> Result<ExitCode, String> {
                 let sess = select(Some(src_agent.as_str().into()))?
                     .iter()
                     .find_map(|a| a.read_session(&session_id).ok())
-                    .ok_or_else(|| format!("sesi '{session_id}' tidak ditemukan"))?;
+                    .ok_or_else(|| format!("session '{session_id}' not found"))?;
                 let sdir = handoff_store_dir(None)?;
                 let d = ho::create_handoff(&sess, target_agent, None, &sdir)
                     .map_err(|e| e.to_string())?;

@@ -79,7 +79,7 @@ xm-relay
 ```
 
 Use **`↑`/`↓` (or `j`/`k`) + `Enter`** to navigate the streamlined interactive flow:
-1. **Main Menu:** Choose **Pindahkan Sesi / Buat Handoff** or **Riwayat Handoff Sebelumnya**.
+1. **Main Menu:** Choose **Hand Off a Session / Create Handoff** or **Previous Handoff History**.
 2. **Pick Session:** Lists sessions in your active directory with human-friendly titles & relative timestamps. Use **`g`** to toggle Global scope, **`a`** to filter by agent, or **`/`** to search inline.
 3. **Pick Target Agent:** Select `opencode`, `antigravity-cli` (`agy`), or `omp`.
 4. **Immediate Action:** Copy the continuation prompt directly to your clipboard, print it to stdout, or launch the target agent CLI in the project directory with the prompt pre-loaded.
