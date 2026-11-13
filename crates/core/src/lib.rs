@@ -1,10 +1,15 @@
 //! Vendor-neutral domain model for xm-relay. Must not depend on any adapter.
 
+pub mod adapter;
 pub mod agent;
 pub mod evidence;
 pub mod session;
 pub mod task;
 
+pub use adapter::{
+    AdapterCapabilities, AdapterError, AdapterResult, AgentAdapter, AgentInstallation,
+    SessionFilter, SessionSummary,
+};
 pub use agent::{AgentId, AgentInfo};
 pub use evidence::{
     Classification, Confidence, Evidence, EvidenceItem, SourceRef, SourceType, Verification,

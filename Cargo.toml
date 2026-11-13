@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli"]
+members = ["crates/core", "crates/cli", "crates/adapters/opencode"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,3 +9,4 @@ license = "MIT"
 
 [workspace.dependencies]
 xm-relay-core = { path = "crates/core" }
+xm-relay-adapter-opencode = { path = "crates/adapters/opencode" }

@@ -1,0 +1,15 @@
+-- Synthetic, anonymised fixture. Subset of the real OpenCode schema (see docs/research/adapter-formats.md).
+CREATE TABLE project (id text PRIMARY KEY, worktree text NOT NULL, vcs text, name text, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text NOT NULL, directory text NOT NULL, title text, version text NOT NULL, agent text, model text, time_created integer NOT NULL, time_updated integer NOT NULL, time_archived integer);
+CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+INSERT INTO project VALUES ('p1','/work/demo','git','demo',1700000000000,1700000000000);
+INSERT INTO session_v2 VALUES ('ses_1','p1','/work/demo','Add login endpoint','1.2.3','build',NULL,1700000000000,1700000060000,NULL);
+INSERT INTO session_v2 VALUES ('ses_2','p1','/work/demo','Weird session','1.2.3','build',NULL,1700000100000,1700000200000,NULL);
+INSERT INTO session_message VALUES ('m1','ses_1','user',1,1700000001000,1700000001000,'{"text":"Add a login endpoint","files":[],"agents":[],"time":{"created":1700000001000}}');
+INSERT INTO session_message VALUES ('m2','ses_1','assistant',2,1700000002000,1700000002000,'{"agent":"build","time":{"created":1700000002000},"content":[{"type":"reasoning","id":"r1","text":"hidden"},{"type":"text","text":"Creating the endpoint."},{"type":"tool","id":"t1","name":"write","executed":true,"state":{"status":"completed","input":{"path":"src/login.rs","content":"fn login(){}"},"content":[{"type":"text","text":"ok"}],"metadata":{"truncated":false}}},{"type":"tool","id":"t2","name":"shell","executed":true,"state":{"status":"completed","input":{"command":"cargo test"},"content":[{"type":"text","text":"1 failed"}],"metadata":{"exit":101,"status":"completed","truncated":false}}},{"type":"tool","id":"t3","name":"edit","executed":true,"state":{"status":"error","input":{"path":"src/x.rs"},"error":{"type":"tool.execution","message":"no match"}}},{"type":"tool","id":"t4","name":"shell","executed":false,"state":{"status":"running","input":{"command":"sleep 1"}}}]}');
+INSERT INTO session_message VALUES ('m3','ses_1','idle',3,1700000003000,1700000003000,'{"outcome":"failed","error":{"type":"provider.quota","message":"quota exceeded"},"time":{"created":1700000003000}}');
+INSERT INTO session_message VALUES ('m4','ses_1','system',4,1700000004000,1700000004000,'{"text":"instructions loaded","time":{"created":1700000004000}}');
+INSERT INTO session_message VALUES ('m5','ses_2','user',1,1700000101000,1700000101000,'{"text":"hello","time":{"created":1700000101000}}');
+INSERT INTO session_message VALUES ('m6','ses_2','hologram',2,1700000102000,1700000102000,'{"x":1}');
+INSERT INTO session_message VALUES ('m7','ses_2','assistant',3,1700000103000,1700000103000,'{"content":[{"type":"mystery"}]}');
+INSERT INTO session_message VALUES ('m8','ses_2','user',4,1700000104000,1700000104000,'not json');
