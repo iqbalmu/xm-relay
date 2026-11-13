@@ -124,6 +124,7 @@ Every subcommand supports `--help` and most provide `--json` for scripting.
 | `xm-relay handoff create` | Build a portable handoff package (`--from`, `--session`, `--to`, `--project`) |
 | `xm-relay handoff list \| inspect \| validate` | View handoff history, inspect `context.md`, or re-validate against live disk |
 | `xm-relay handoff export <id> <dest>` | Copy a checksum-verified handoff package to an external directory |
+| `xm-relay history` | Shortcut to list recent handoff packages |
 | `xm-relay continue <id>` | Re-validate and emit the target-agent preflight continuation prompt |
 
 ---
@@ -168,8 +169,7 @@ Packages are stored in `~/.local/share/xm-relay/handoffs/<handoff-id>/` (or `$XD
 | `crates/security` | Heuristic secret detection and redaction |
 | `crates/checkpoint` | Workspace checkpoint builder, checksum verifier, and drift comparator |
 | `crates/handoff` | Evidence-based handoff engine, preflight validator, and prompt generator |
-| `crates/tui` | Ratatui + Crossterm interactive terminal interface |
-| `crates/cli` | `xm-relay` CLI binary |
+| `crates/cli` | `xm-relay` CLI binary & interactive arrow-key wizard |
 
 ---
 
