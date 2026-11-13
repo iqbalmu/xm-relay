@@ -1,3 +1,5 @@
+mod interactive;
+
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 use xm_relay_adapter_antigravity::AntigravityAdapter;
@@ -17,7 +19,7 @@ use xm_relay_security as sec;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -55,14 +57,6 @@ enum Command {
         path: Option<std::path::PathBuf>,
         #[arg(long)]
         json: bool,
-    },
-    /// Launch the interactive terminal UI (TUI)
-    Tui {
-        /// Project directory (defaults to current directory)
-        path: Option<std::path::PathBuf>,
-        /// Show sessions from all directories instead of only the active project
-        #[arg(short, long)]
-        global: bool,
     },
     /// Update xm-relay to the latest version from GitHub
     Update {
@@ -1116,8 +1110,66 @@ fn update_cmd(version: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn interactive_main() -> Result<ExitCode, String> {
+    let main_items = vec![
+        "Pindahkan Sesi / Buat Handoff".to_string(),
+        "Riwayat Handoff Sebelumnya".to_string(),
+        "Keluar".to_string(),
+    ];
+
+    loop {
+        let Some(choice) = interactive::select_menu("xm-relay — Pilih aksi", &main_items, 0)?
+        else {
+            return Ok(ExitCode::SUCCESS);
+        };
+
+        match choice {
+            0 => {
+                let all_adapters = adapters();
+                let active_root = resolve_scope_root(false, None);
+                let Some((src_agent, session_id)) =
+                    interactive::pick_session(&all_adapters, active_root)?
+                else {
+                    continue;
+                };
+                let Some(target_agent) = interactive::pick_target_agent(Some(src_agent))? else {
+                    continue;
+                };
+                let sess = select(Some(src_agent.as_str().into()))?
+                    .iter()
+                    .find_map(|a| a.read_session(&session_id).ok())
+                    .ok_or_else(|| format!("sesi '{session_id}' tidak ditemukan"))?;
+                let sdir = handoff_store_dir(None)?;
+                let d = ho::create_handoff(&sess, target_agent, None, &sdir)
+                    .map_err(|e| e.to_string())?;
+                interactive::handle_handoff_ready(&d, &sdir)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            1 => {
+                let sdir = handoff_store_dir(None)?;
+                let Some(hid) = interactive::pick_handoff_history(&sdir)? else {
+                    continue;
+                };
+                let d = ho::validate_handoff(&sdir, &hid, None).map_err(|e| e.to_string())?;
+                interactive::handle_handoff_ready(&d, &sdir)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            _ => return Ok(ExitCode::SUCCESS),
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let result = match Cli::parse().command {
+    let Some(command) = Cli::parse().command else {
+        return match interactive_main() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    };
+    let result = match command {
         Command::Agents => agents(),
         Command::Update { version } => update_cmd(&version),
         Command::Checkpoint { command } => checkpoint_cmd(command),
@@ -1172,11 +1224,6 @@ fn main() -> ExitCode {
             command: ProjectCommand::Instructions { path, json },
         } => project_instructions(path, json),
         Command::Status { path, json } => status_cmd(path, json),
-        Command::Tui { path, global } => xm_relay_tui::run_tui(
-            adapters(),
-            path.unwrap_or_else(|| std::path::PathBuf::from(".")),
-            global,
-        ),
         Command::Sessions {
             command:
                 SessionsCommand::List {

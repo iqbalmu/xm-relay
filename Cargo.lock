@@ -980,6 +980,7 @@ name = "xm-relay"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crossterm",
  "serde",
  "serde_json",
  "xm-relay-adapter-antigravity",
@@ -990,7 +991,6 @@ dependencies = [
  "xm-relay-handoff",
  "xm-relay-repository",
  "xm-relay-security",
- "xm-relay-tui",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](rust-toolchain.toml)
 
-[**Quick Install**](#-installation) • [**Quick Start**](#-quick-start) • [**Interactive TUI**](#-interactive-tui) • [**CLI Reference**](#-cli-reference) • [**Workspace Crates**](#-workspace-crates)
+[**Quick Install**](#-installation) • [**Quick Start**](#-quick-start) • [**CLI Reference**](#-cli-reference) • [**Workspace Crates**](#-workspace-crates)
 
 </div>
 
@@ -19,7 +19,7 @@
 
 When you hit a usage limit or switch models across AI coding agents (**OpenCode**, **Antigravity CLI**, **Oh My Pi**), copy-pasting the last few messages is unreliable. Agent summaries can hallucinate completed work, miss failed attempts, or contradict the actual state of your Git working tree.
 
-`xm-relay` is a **local-first, strictly read-only** CLI and TUI tool that bridges coding agents safely:
+`xm-relay` is a **local-first, strictly read-only** CLI tool that bridges coding agents safely:
 
 1. **Discovers & Normalizes Sessions** across `opencode`, `antigravity-cli`, and `omp` without ever modifying source session databases or files.
 2. **Inspects Live Git State** (branch, HEAD, staged/unstaged/untracked files, binary-safe diffs, and `AGENTS.md`/`CLAUDE.md` instructions) with `GIT_OPTIONAL_LOCKS=0` so `.git/index` is never mutated.
@@ -71,13 +71,26 @@ cargo install --path crates/cli
 
 ## 🚀 Quick Start
 
-Suppose you were working in **OpenCode** (`opencode`) and want to continue seamlessly in **Oh My Pi** (`omp`) or **Antigravity CLI** (`antigravity-cli`):
+### Interactive Arrow-Key Mode (Recommended)
+Simply run `xm-relay` with no arguments inside your project directory:
+
+```bash
+xm-relay
+```
+
+Use **`↑`/`↓` (or `j`/`k`) + `Enter`** to navigate the streamlined interactive flow:
+1. **Main Menu:** Choose **Pindahkan Sesi / Buat Handoff** or **Riwayat Handoff Sebelumnya**.
+2. **Pick Session:** Lists sessions in your active directory with human-friendly titles & relative timestamps. Use **`g`** to toggle Global scope, **`a`** to filter by agent, or **`/`** to search inline.
+3. **Pick Target Agent:** Select `opencode`, `antigravity-cli` (`agy`), or `omp`.
+4. **Immediate Action:** Copy the continuation prompt directly to your clipboard, print it to stdout, or launch the target agent CLI in the project directory with the prompt pre-loaded.
+
+### Direct CLI Mode (For Scripting & Power Users)
 
 ```bash
 # 1. Check detected agents and current repository status
 xm-relay status
 
-# 2. Find your latest session ID
+# 2. Find your latest session ID in the active directory (add -g for global)
 xm-relay sessions list --agent opencode --limit 5
 
 # 3. Build a verified, secret-redacted handoff package
@@ -88,30 +101,6 @@ xm-relay continue <HANDOFF_ID>
 ```
 
 > **Tip:** Pipe `xm-relay continue <HANDOFF_ID>` directly to your clipboard (`| wl-copy`, `| xclip -sel clip`, or `| pbcopy`) and paste it into your target coding agent. If a critical conflict is detected, `xm-relay continue` exits with code `2` and refuses to emit a prompt until the conflict is resolved.
-
----
-
-## 🖥️ Interactive TUI
-
-Prefer an interactive workflow? Run:
-
-```bash
-xm-relay tui
-```
-
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` or `1`–`5` | Switch views (`1:Sessions`, `2:Session Detail`, `3:Project & Checkpoints`, `4:Handoffs & Preflight`, `5:Agents`) |
-| `j` / `k` or `↑` / `↓` | Navigate lists or scroll detail panes (`PgUp` / `PgDn` for fast scroll) |
-| `Enter` | Inspect the selected session timeline & parse report |
-| `/` | Live search sessions by ID, title, or project path (`Enter` / `Esc` to finish) |
-| `g` | Toggle session scope between **Active Directory (`CWD`)** (default) and **Global (`ALL`)** |
-| `a` | Cycle source agent filter (`ALL` → `opencode` → `antigravity-cli` → `omp`) |
-| `t` | Cycle target agent (`opencode` / `antigravity-cli` / `omp`) |
-| `h` | Build a handoff package from the selected session and jump to preflight report |
-| `c` | Create a read-only workspace checkpoint for the active project |
-| `r` | Refresh sessions, Git status, checkpoints, and handoffs |
-| `q` | Quit |
 
 ---
 

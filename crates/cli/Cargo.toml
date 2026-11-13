@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Local-first, cross-agent CLI/TUI tool for verifiable AI coding session handoffs"
+description = "Local-first, cross-agent CLI tool for verifiable AI coding session handoffs"
 
 [dependencies]
 xm-relay-core.workspace = true
@@ -15,9 +15,9 @@ xm-relay-repository.workspace = true
 xm-relay-security.workspace = true
 xm-relay-checkpoint.workspace = true
 xm-relay-handoff.workspace = true
-xm-relay-tui.workspace = true
 xm-relay-adapter-antigravity.workspace = true
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
