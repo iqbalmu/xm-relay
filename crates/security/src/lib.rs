@@ -205,7 +205,7 @@ pub fn scan_patch(patch: &str) -> Vec<DiffFinding> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SensitiveFile {
     pub path: String,
-    pub reason: &'static str,
+    pub reason: String,
 }
 
 /// Flag files that commonly hold secrets, by name only (content is not read).
@@ -242,7 +242,7 @@ pub fn sensitive_file(path: &str) -> Option<SensitiveFile> {
     };
     Some(SensitiveFile {
         path: path.into(),
-        reason,
+        reason: reason.to_string(),
     })
 }
 
@@ -306,7 +306,7 @@ mod tests {
     fn detects_private_key_block_even_when_truncated() {
         let full =
             "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\ndef\n-----END RSA PRIVATE KEY-----\nafter";
-        let f = scan_text(&full);
+        let f = scan_text(full);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].kind, SecretKind::PrivateKey);
         assert!(full[f[0].end..].starts_with("\nafter"));

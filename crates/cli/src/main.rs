@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use xm_relay_adapter_antigravity::AntigravityAdapter;
 use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
+use xm_relay_checkpoint as ckpt;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
 use xm_relay_repository as repo;
 use xm_relay_security as sec;
@@ -26,6 +27,11 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    /// Create, list, inspect, and compare workspace checkpoints
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommand,
     },
     /// Discover and inspect agent sessions
     Sessions {
@@ -54,6 +60,46 @@ enum ProjectCommand {
     Instructions {
         /// Defaults to the current directory
         path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckpointCommand {
+    /// Record a read-only workspace snapshot with redacted tracked diff and checksums
+    Create {
+        /// Project directory (defaults to current directory)
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List stored checkpoints, newest first
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect a checkpoint and verify its artifact checksums
+    Inspect {
+        checkpoint_id: String,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare current workspace state with a stored checkpoint
+    Diff {
+        checkpoint_id: String,
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -419,9 +465,149 @@ fn project_scan(path: Option<std::path::PathBuf>, json: bool) -> Result<bool, St
     Ok(!hits.is_empty())
 }
 
+fn store_dir(custom: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    custom
+        .or_else(ckpt::default_store_dir)
+        .ok_or_else(|| "cannot resolve checkpoint store directory".into())
+}
+
+fn checkpoint_cmd(cmd: CheckpointCommand) -> Result<(), String> {
+    match cmd {
+        CheckpointCommand::Create { path, store, json } => {
+            let p = path.unwrap_or_else(|| std::path::PathBuf::from("."));
+            let m = ckpt::create_checkpoint(&p, &store_dir(store)?).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!("checkpoint {}", m.checkpoint_id);
+                println!("created    {}", m.created_at);
+                println!("project    {}", m.project_root);
+                println!(
+                    "branch     {}  head {}",
+                    m.branch.as_deref().unwrap_or("(detached)"),
+                    m.head_commit.as_deref().unwrap_or("(none)")
+                );
+                println!(
+                    "dirty      {} (staged {}, unstaged {}, untracked {}, conflicted {})",
+                    m.working_tree_dirty,
+                    m.staged_count,
+                    m.unstaged_count,
+                    m.untracked_count,
+                    m.conflicted_count
+                );
+                for w in &m.warnings {
+                    println!("  ! {w}");
+                }
+            }
+        }
+        CheckpointCommand::List {
+            project,
+            store,
+            json,
+        } => {
+            let list = ckpt::list_checkpoints(&store_dir(store)?, project.as_deref())
+                .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?
+                );
+            } else {
+                for m in list {
+                    println!(
+                        "{}  {}  {}  dirty={}  {}",
+                        m.checkpoint_id,
+                        m.created_at,
+                        m.branch.as_deref().unwrap_or("(detached)"),
+                        m.working_tree_dirty,
+                        m.project_root
+                    );
+                }
+            }
+        }
+        CheckpointCommand::Inspect {
+            checkpoint_id,
+            store,
+            json,
+        } => {
+            let d = ckpt::inspect_checkpoint(&store_dir(store)?, &checkpoint_id)
+                .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!("checkpoint {}", d.manifest.checkpoint_id);
+                println!("project    {}", d.manifest.project_root);
+                println!(
+                    "checksums  {}",
+                    if d.checksums_valid {
+                        "VALID"
+                    } else {
+                        "INVALID"
+                    }
+                );
+                for e in &d.checksum_errors {
+                    println!("  ! {e}");
+                }
+                for a in &d.manifest.artifacts {
+                    println!("  {:>8} B  {}  {}", a.size, &a.sha256[..12], a.path);
+                }
+                for w in &d.manifest.warnings {
+                    println!("  ! {w}");
+                }
+            }
+        }
+        CheckpointCommand::Diff {
+            checkpoint_id,
+            path,
+            store,
+            json,
+        } => {
+            let drift =
+                ckpt::compare_with_workspace(&store_dir(store)?, &checkpoint_id, path.as_deref())
+                    .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&drift).map_err(|e| e.to_string())?
+                );
+            } else if drift.clean_match {
+                println!("workspace matches checkpoint {}", drift.checkpoint_id);
+            } else {
+                println!("DRIFT detected since checkpoint {}:", drift.checkpoint_id);
+                if let Some((old, new)) = &drift.branch_changed {
+                    println!("  branch: {:?} -> {:?}", old, new);
+                }
+                if let Some((old, new)) = &drift.head_changed {
+                    println!("  head:   {:?} -> {:?}", old, new);
+                }
+                if drift.patch_sha256_changed {
+                    println!("  tracked diff changed");
+                }
+                for f in &drift.untracked_added {
+                    println!("  + untracked: {f}");
+                }
+                for f in &drift.untracked_removed {
+                    println!("  - untracked: {f}");
+                }
+                for f in &drift.untracked_modified {
+                    println!("  ~ untracked: {f}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
+        Command::Checkpoint { command } => checkpoint_cmd(command),
         Command::Project {
             command: ProjectCommand::Inspect { path, json },
         } => project_inspect(path, json),

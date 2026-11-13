@@ -494,6 +494,7 @@ dependencies = [
  "xm-relay-adapter-antigravity",
  "xm-relay-adapter-omp",
  "xm-relay-adapter-opencode",
+ "xm-relay-checkpoint",
  "xm-relay-core",
  "xm-relay-repository",
  "xm-relay-security",
@@ -523,6 +524,16 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "xm-relay-core",
+]
+
+[[package]]
+name = "xm-relay-checkpoint"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xm-relay-repository",
+ "xm-relay-security",
 ]
 
 [[package]]

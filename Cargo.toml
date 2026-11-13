@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adapters/omp", "crates/adapters/antigravity", "crates/repository", "crates/security"]
+members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adapters/omp", "crates/adapters/antigravity", "crates/repository", "crates/security", "crates/checkpoint"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,3 +14,4 @@ xm-relay-adapter-omp = { path = "crates/adapters/omp" }
 xm-relay-adapter-antigravity = { path = "crates/adapters/antigravity" }
 xm-relay-repository = { path = "crates/repository" }
 xm-relay-security = { path = "crates/security" }
+xm-relay-checkpoint = { path = "crates/checkpoint" }
