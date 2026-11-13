@@ -42,6 +42,13 @@ enum ProjectCommand {
         #[arg(long)]
         json: bool,
     },
+    /// List project instruction files (AGENTS.md, CLAUDE.md, ...)
+    Instructions {
+        /// Defaults to the current directory
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,12 +275,48 @@ fn project_inspect(path: Option<std::path::PathBuf>, json: bool) -> Result<(), S
     Ok(())
 }
 
+fn project_instructions(path: Option<std::path::PathBuf>, json: bool) -> Result<(), String> {
+    let set = repo::discover_instructions(&path.unwrap_or_else(|| std::path::PathBuf::from(".")));
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&set).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    println!("root      {}", set.root);
+    if set.files.is_empty() {
+        println!("no instruction files found");
+    }
+    for f in &set.files {
+        println!(
+            "{:<8} {}{}  {} bytes  sha256 {}",
+            format!("{:?}", f.kind).to_lowercase(),
+            f.path,
+            if f.applies_to_start {
+                ""
+            } else {
+                " (other scope)"
+            },
+            f.size,
+            f.sha256.as_deref().map(|h| &h[..12]).unwrap_or("-")
+        );
+    }
+    for w in &set.warnings {
+        println!("  ! {w}");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
         Command::Project {
             command: ProjectCommand::Inspect { path, json },
         } => project_inspect(path, json),
+        Command::Project {
+            command: ProjectCommand::Instructions { path, json },
+        } => project_instructions(path, json),
         Command::Sessions {
             command: SessionsCommand::List { agent, limit },
         } => list(agent, limit),

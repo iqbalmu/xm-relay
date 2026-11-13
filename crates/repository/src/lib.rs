@@ -3,6 +3,10 @@
 //! Nothing here mutates the repository: no reset, clean, checkout, stash, commit
 //! or index refresh. `GIT_OPTIONAL_LOCKS=0` stops `git status` from rewriting the index.
 
+pub mod instructions;
+
+pub use instructions::{discover_instructions, InstructionFile, InstructionKind, InstructionSet};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -377,4 +381,12 @@ pub fn tracked_patch(root: &Path) -> Result<Vec<u8>, RepoError> {
     ];
     args.push(if has_head { "HEAD" } else { "--cached" });
     git(root, &args)
+}
+
+/// Top-level directory of the repository containing `path`, if any.
+pub fn repo_root(path: &Path) -> Option<PathBuf> {
+    git_text(path, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
