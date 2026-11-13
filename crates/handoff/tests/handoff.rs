@@ -8,7 +8,8 @@ use xm_relay_core::{
     ParseReport, ParseStatus, Session, ToolInfo, ToolStatus,
 };
 use xm_relay_handoff::{
-    create_handoff, generate_continuation_prompt, list_handoffs, validate_handoff, PreflightStatus,
+    create_handoff, export_handoff, generate_continuation_prompt, list_handoffs, validate_handoff,
+    PreflightStatus,
 };
 
 struct Tmp(PathBuf);
@@ -157,6 +158,12 @@ fn builds_verifies_redacts_and_detects_missing_file_conflict() {
     );
     assert!(!detail.context_md.contains(&secret));
     assert!(detail.context_md.contains("[REDACTED:aws_access_key]"));
+
+    let exp_root = t.0.join("exported");
+    let exp_path = export_handoff(&store, &detail.manifest.handoff_id, &exp_root, false).unwrap();
+    assert!(exp_path.join("manifest.json").is_file());
+    assert!(export_handoff(&store, &detail.manifest.handoff_id, &exp_root, false).is_err());
+    assert!(export_handoff(&store, &detail.manifest.handoff_id, &exp_root, true).is_ok());
 
     let list = list_handoffs(&store).unwrap();
     assert_eq!(list.len(), 1);

@@ -1248,3 +1248,49 @@ If preflight passes, continue with the highest-priority pending task.
         ctx = detail.context_md.trim()
     )
 }
+
+/// Export a verified handoff package to `dest_dir/<handoff_id>/`.
+/// Refuses to overwrite an existing destination unless `overwrite` is true,
+/// and refuses to export if checksum verification fails.
+pub fn export_handoff(
+    store_dir: &Path,
+    id: &str,
+    dest_dir: &Path,
+    overwrite: bool,
+) -> Result<PathBuf, HandoffError> {
+    let detail = validate_handoff(store_dir, id, None)?;
+    if !detail.validation.checksums_valid {
+        return Err(HandoffError::Io(format!(
+            "refusing to export package with invalid checksums: {}",
+            detail.validation.checksum_errors.join("; ")
+        )));
+    }
+    let src_dir = store_dir.join(id);
+    let out_dir = dest_dir.join(id);
+    if out_dir.exists() {
+        if !overwrite {
+            return Err(HandoffError::Io(format!(
+                "destination already exists (pass --overwrite to replace): {}",
+                out_dir.display()
+            )));
+        }
+        fs::remove_dir_all(&out_dir).map_err(io_err)?;
+    }
+    fs::create_dir_all(&out_dir).map_err(io_err)?;
+    for f in &detail.manifest.files {
+        if !valid_rel_path(&f.path) {
+            return Err(HandoffError::Io(format!(
+                "unsafe relative path: {}",
+                f.path
+            )));
+        }
+        let target = out_dir.join(&f.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(io_err)?;
+        }
+        fs::copy(src_dir.join(&f.path), &target).map_err(io_err)?;
+    }
+    fs::copy(src_dir.join("manifest.json"), out_dir.join("manifest.json")).map_err(io_err)?;
+    fs::copy(src_dir.join("checksums.txt"), out_dir.join("checksums.txt")).map_err(io_err)?;
+    Ok(out_dir)
+}

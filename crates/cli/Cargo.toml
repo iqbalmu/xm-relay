@@ -12,6 +12,7 @@ xm-relay-repository.workspace = true
 xm-relay-security.workspace = true
 xm-relay-checkpoint.workspace = true
 xm-relay-handoff.workspace = true
+xm-relay-tui.workspace = true
 xm-relay-adapter-antigravity.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"

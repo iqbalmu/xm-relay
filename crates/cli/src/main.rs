@@ -49,6 +49,18 @@ enum Command {
         #[arg(long)]
         store: Option<std::path::PathBuf>,
     },
+    /// Show overall status of agents, current project, checkpoints, and handoffs
+    Status {
+        /// Project directory (defaults to current directory)
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Launch the interactive terminal UI (TUI)
+    Tui {
+        /// Project directory (defaults to current directory)
+        path: Option<std::path::PathBuf>,
+    },
     /// Show recent handoff history
     History {
         #[arg(long)]
@@ -170,6 +182,15 @@ enum HandoffCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export a verified handoff package to a destination directory
+    Export {
+        handoff_id: String,
+        dest: std::path::PathBuf,
+        #[arg(long)]
+        overwrite: bool,
+        #[arg(long)]
+        store: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -180,6 +201,16 @@ enum SessionsCommand {
         agent: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+    },
+    /// Search sessions by keyword across id, title, and project path
+    Search {
+        query: String,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Show a normalised session and its parse report
     Inspect {
@@ -828,7 +859,149 @@ fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
             };
             Ok(code)
         }
+        HandoffCommand::Export {
+            handoff_id,
+            dest,
+            overwrite,
+            store,
+        } => {
+            let out = ho::export_handoff(&handoff_store_dir(store)?, &handoff_id, &dest, overwrite)
+                .map_err(|e| e.to_string())?;
+            println!("exported {} to {}", handoff_id, out.display());
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+fn search_sessions(
+    query: &str,
+    agent: Option<String>,
+    limit: usize,
+    json: bool,
+) -> Result<(), String> {
+    let q = query.to_ascii_lowercase();
+    let filter = SessionFilter {
+        limit: Some(200),
+        ..Default::default()
+    };
+    let mut matches = Vec::new();
+    for a in select(agent)? {
+        if let Ok(list) = a.list_sessions(&filter) {
+            for s in list {
+                let hit = s.id.to_ascii_lowercase().contains(&q)
+                    || s.title
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || s.project_root
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q);
+                if hit {
+                    matches.push(s);
+                }
+            }
+        }
+    }
+    matches.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    matches.truncate(limit);
+    if json {
+        #[derive(serde::Serialize)]
+        struct Row {
+            agent: String,
+            id: String,
+            updated_at: Option<String>,
+            event_count: u64,
+            project_root: Option<String>,
+            title: Option<String>,
+        }
+        let rows: Vec<Row> = matches
+            .into_iter()
+            .map(|s| Row {
+                agent: s.agent.as_str().into(),
+                id: s.id,
+                updated_at: s.updated_at,
+                event_count: s.event_count,
+                project_root: s.project_root,
+                title: s.title,
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?
+        );
+    } else {
+        for s in matches {
+            println!(
+                "{:<15} {}  {}  {:>5} ev  {}  {}",
+                s.agent.as_str(),
+                s.id,
+                s.updated_at.unwrap_or_default(),
+                s.event_count,
+                s.project_root.unwrap_or_default(),
+                s.title.unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn status_cmd(path: Option<std::path::PathBuf>, json: bool) -> Result<(), String> {
+    let p = path.unwrap_or_else(|| std::path::PathBuf::from("."));
+    let repo_st = repo::inspect(&p).map_err(|e| e.to_string())?;
+    let ckpts = ckpt::default_store_dir()
+        .and_then(|d| ckpt::list_checkpoints(&d, None).ok())
+        .unwrap_or_default();
+    let handoffs = ho::default_store_dir()
+        .and_then(|d| ho::list_handoffs(&d).ok())
+        .unwrap_or_default();
+    let mut ags = Vec::new();
+    for a in adapters() {
+        if let Ok(i) = a.detect() {
+            ags.push((i.agent.as_str().to_string(), i.available, i.version));
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agents": ags,
+                "repository": {
+                    "is_repository": repo_st.is_repository,
+                    "root": repo_st.root,
+                    "branch": repo_st.branch,
+                    "head_commit": repo_st.head_commit,
+                    "working_tree_dirty": repo_st.working_tree_dirty,
+                },
+                "checkpoints_count": ckpts.len(),
+                "handoffs_count": handoffs.len(),
+            }))
+            .map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "agents      {}",
+            ags.iter()
+                .map(|(n, av, _)| format!("{n}={}", if *av { "found" } else { "missing" }))
+                .collect::<Vec<_>>()
+                .join("  ")
+        );
+        if repo_st.is_repository {
+            println!(
+                "repository  {} (branch={}, dirty={})",
+                repo_st.root.as_deref().unwrap_or("-"),
+                repo_st.branch.as_deref().unwrap_or("detached"),
+                repo_st.working_tree_dirty
+            );
+        } else {
+            println!("repository  not inside a Git repository");
+        }
+        println!("checkpoints {} stored", ckpts.len());
+        println!("handoffs    {} stored", handoffs.len());
+    }
+    Ok(())
 }
 
 fn continue_cmd(
@@ -917,9 +1090,23 @@ fn main() -> ExitCode {
         Command::Project {
             command: ProjectCommand::Instructions { path, json },
         } => project_instructions(path, json),
+        Command::Status { path, json } => status_cmd(path, json),
+        Command::Tui { path } => xm_relay_tui::run_tui(
+            adapters(),
+            path.unwrap_or_else(|| std::path::PathBuf::from(".")),
+        ),
         Command::Sessions {
             command: SessionsCommand::List { agent, limit },
         } => list(agent, limit),
+        Command::Sessions {
+            command:
+                SessionsCommand::Search {
+                    query,
+                    agent,
+                    limit,
+                    json,
+                },
+        } => search_sessions(&query, agent, limit, json),
         Command::Sessions {
             command:
                 SessionsCommand::Inspect {
