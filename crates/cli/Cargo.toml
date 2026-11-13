@@ -1,0 +1,8 @@
+[package]
+name = "xm-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+xm-relay-core.workspace = true
