@@ -101,6 +101,7 @@ xm-relay tui
 | `j` / `k` or `↑` / `↓` | Navigate lists or scroll detail panes (`PgUp` / `PgDn` for fast scroll) |
 | `Enter` | Inspect the selected session timeline & parse report |
 | `/` | Live search sessions by ID, title, or project path (`Enter` / `Esc` to finish) |
+| `g` | Toggle session scope between **Active Directory (`CWD`)** (default) and **Global (`ALL`)** |
 | `a` | Cycle source agent filter (`ALL` → `opencode` → `antigravity-cli` → `omp`) |
 | `t` | Cycle target agent (`opencode` / `antigravity-cli` / `omp`) |
 | `h` | Build a handoff package from the selected session and jump to preflight report |
@@ -118,8 +119,8 @@ Every subcommand supports `--help` and most provide `--json` for scripting.
 |---|---|
 | `xm-relay agents` | Detect installed coding agents and their session data paths |
 | `xm-relay status [path]` | Summary of detected agents, live Git state, checkpoints, and handoffs |
-| `xm-relay sessions list` | List recent sessions across all agents (`--agent`, `--limit`) |
-| `xm-relay sessions search <query>` | Search sessions by keyword across ID, title, or project root |
+| `xm-relay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`) |
+| `xm-relay sessions search <query>` | Search sessions in the active directory (`-g`/`--global` for all dirs) |
 | `xm-relay sessions inspect <id>` | Inspect normalized events and transparency `parse_report` |
 | `xm-relay project inspect [path]` | Read-only Git status, diff stats, untracked inventory, and recent commits |
 | `xm-relay project instructions [path]` | Discover `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, Copilot rules |

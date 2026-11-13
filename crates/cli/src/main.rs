@@ -60,6 +60,9 @@ enum Command {
     Tui {
         /// Project directory (defaults to current directory)
         path: Option<std::path::PathBuf>,
+        /// Show sessions from all directories instead of only the active project
+        #[arg(short, long)]
+        global: bool,
     },
     /// Show recent handoff history
     History {
@@ -195,18 +198,30 @@ enum HandoffCommand {
 
 #[derive(Subcommand)]
 enum SessionsCommand {
-    /// List sessions, newest first (all agents unless --agent is given)
+    /// List sessions for the active project directory (pass -g/--global for all directories)
     List {
         #[arg(long)]
         agent: Option<String>,
+        /// Show sessions from all directories instead of only the active project
+        #[arg(short, long)]
+        global: bool,
+        /// Explicit project directory to filter by (defaults to current directory)
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Search sessions by keyword across id, title, and project path
+    /// Search sessions by keyword (defaults to active project directory; pass -g/--global for all)
     Search {
         query: String,
         #[arg(long)]
         agent: Option<String>,
+        /// Search across all directories instead of only the active project
+        #[arg(short, long)]
+        global: bool,
+        /// Explicit project directory to filter by (defaults to current directory)
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long)]
@@ -277,10 +292,25 @@ fn agents() -> Result<(), String> {
     Ok(())
 }
 
-fn list(agent: Option<String>, limit: usize) -> Result<(), String> {
+fn resolve_scope_root(global: bool, project: Option<std::path::PathBuf>) -> Option<String> {
+    if global {
+        return None;
+    }
+    let p = project.unwrap_or_else(|| std::path::PathBuf::from("."));
+    let canon = std::fs::canonicalize(&p).unwrap_or(p);
+    let root = repo::repo_root(&canon).unwrap_or(canon);
+    Some(root.display().to_string())
+}
+
+fn list(
+    agent: Option<String>,
+    global: bool,
+    project: Option<std::path::PathBuf>,
+    limit: usize,
+) -> Result<(), String> {
     let filter = SessionFilter {
+        project_root: resolve_scope_root(global, project),
         limit: Some(limit),
-        ..Default::default()
     };
     let mut all = Vec::new();
     for a in select(agent)? {
@@ -876,13 +906,15 @@ fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
 fn search_sessions(
     query: &str,
     agent: Option<String>,
+    global: bool,
+    project: Option<std::path::PathBuf>,
     limit: usize,
     json: bool,
 ) -> Result<(), String> {
     let q = query.to_ascii_lowercase();
     let filter = SessionFilter {
+        project_root: resolve_scope_root(global, project),
         limit: Some(200),
-        ..Default::default()
     };
     let mut matches = Vec::new();
     for a in select(agent)? {
@@ -1091,22 +1123,31 @@ fn main() -> ExitCode {
             command: ProjectCommand::Instructions { path, json },
         } => project_instructions(path, json),
         Command::Status { path, json } => status_cmd(path, json),
-        Command::Tui { path } => xm_relay_tui::run_tui(
+        Command::Tui { path, global } => xm_relay_tui::run_tui(
             adapters(),
             path.unwrap_or_else(|| std::path::PathBuf::from(".")),
+            global,
         ),
         Command::Sessions {
-            command: SessionsCommand::List { agent, limit },
-        } => list(agent, limit),
+            command:
+                SessionsCommand::List {
+                    agent,
+                    global,
+                    project,
+                    limit,
+                },
+        } => list(agent, global, project, limit),
         Command::Sessions {
             command:
                 SessionsCommand::Search {
                     query,
                     agent,
+                    global,
+                    project,
                     limit,
                     json,
                 },
-        } => search_sessions(&query, agent, limit, json),
+        } => search_sessions(&query, agent, global, project, limit, json),
         Command::Sessions {
             command:
                 SessionsCommand::Inspect {

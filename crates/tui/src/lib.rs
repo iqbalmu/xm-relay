@@ -30,7 +30,9 @@ use xm_relay_handoff::{
     create_handoff, default_store_dir as default_ho_dir, list_handoffs, validate_handoff,
     HandoffDetail, HandoffManifest, PreflightStatus,
 };
-use xm_relay_repository::{discover_instructions, inspect, InstructionSet, RepositoryState};
+use xm_relay_repository::{
+    discover_instructions, inspect, repo_root, InstructionSet, RepositoryState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -74,6 +76,8 @@ impl Tab {
 pub struct App {
     adapters: Vec<Box<dyn AgentAdapter>>,
     pub tab: Tab,
+    pub global_scope: bool,
+    pub active_project_root: String,
     pub agent_filter: Option<AgentId>,
     pub target_agent: AgentId,
     pub search_mode: bool,
@@ -100,15 +104,23 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(adapters: Vec<Box<dyn AgentAdapter>>, project_path: PathBuf) -> Self {
+    pub fn new(
+        adapters: Vec<Box<dyn AgentAdapter>>,
+        project_path: PathBuf,
+        global_scope: bool,
+    ) -> Self {
+        let canon = std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
+        let active_project_root = repo_root(&canon).unwrap_or(canon).display().to_string();
         let mut app = Self {
             adapters,
             tab: Tab::Sessions,
+            global_scope,
+            active_project_root,
             agent_filter: None,
             target_agent: AgentId::Omp,
             search_mode: false,
             search_query: String::new(),
-            status_msg: "Ready. Keys: Tab/1-5 switch views | j/k move | Enter inspect | / search | a filter | t target | h handoff | c checkpoint | q quit".into(),
+            status_msg: "Ready. Keys: Tab/1-5 views | j/k move | Enter inspect | g toggle CWD/Global | / search | a agent | t target | h handoff | c ckpt | q quit".into(),
             should_quit: false,
             installations: Vec::new(),
             all_sessions: Vec::new(),
@@ -167,9 +179,17 @@ impl App {
 
     pub fn apply_filter(&mut self) {
         let q = self.search_query.to_ascii_lowercase();
+        let active_root = &self.active_project_root;
         self.filtered_sessions = self
             .all_sessions
             .iter()
+            .filter(|s| {
+                if self.global_scope {
+                    true
+                } else {
+                    s.project_root.as_deref() == Some(active_root.as_str())
+                }
+            })
             .filter(|s| self.agent_filter.is_none_or(|af| s.agent == af))
             .filter(|s| {
                 if q.is_empty() {
@@ -334,6 +354,20 @@ impl App {
                 self.tab = Tab::Sessions;
                 self.status_msg = "Type search query and press Enter/Esc...".into();
             }
+            KeyCode::Char('g') => {
+                self.global_scope = !self.global_scope;
+                self.apply_filter();
+                let scope_desc = if self.global_scope {
+                    "GLOBAL (all directories)".to_string()
+                } else {
+                    format!("ACTIVE DIR ({})", self.active_project_root)
+                };
+                self.status_msg = format!(
+                    "Session scope: {} — {} session(s)",
+                    scope_desc,
+                    self.filtered_sessions.len()
+                );
+            }
             KeyCode::Char('a') => {
                 self.cycle_agent_filter();
                 self.status_msg = format!(
@@ -419,8 +453,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.title())).collect();
     let idx = Tab::ALL.iter().position(|&t| t == app.tab).unwrap_or(0);
+    let scope_label = if app.global_scope {
+        "GLOBAL".to_string()
+    } else {
+        format!("CWD ({})", app.active_project_root)
+    };
     let header_title = format!(
-        " xm-relay | Filter: {} | Target Agent: {} | Search: '{}' ",
+        " xm-relay | Scope: {} [g] | Agent: {} [a] | Target: {} [t] | Search: '{}' [/] ",
+        scope_label,
         app.agent_filter.map(|a| a.as_str()).unwrap_or("ALL"),
         app.target_agent.as_str(),
         app.search_query
@@ -819,14 +859,18 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Launch the interactive terminal UI.
-pub fn run_tui(adapters: Vec<Box<dyn AgentAdapter>>, project_path: PathBuf) -> Result<(), String> {
+pub fn run_tui(
+    adapters: Vec<Box<dyn AgentAdapter>>,
+    project_path: PathBuf,
+    global_scope: bool,
+) -> Result<(), String> {
     enable_raw_mode().map_err(|e| e.to_string())?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(|e| e.to_string())?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
-    let mut app = App::new(adapters, project_path);
+    let mut app = App::new(adapters, project_path, global_scope);
     let res = event_loop(&mut terminal, &mut app);
 
     let _ = disable_raw_mode();
@@ -861,7 +905,7 @@ mod tests {
     fn renders_all_tabs_and_handles_navigation_in_memory() {
         let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(Vec::new(), PathBuf::from("."));
+        let mut app = App::new(Vec::new(), PathBuf::from("."), false);
 
         for _ in 0..Tab::ALL.len() {
             terminal.draw(|f| draw(f, &app)).unwrap();
@@ -878,6 +922,9 @@ mod tests {
 
         app.handle_key(KeyCode::Char('t'));
         assert_eq!(app.target_agent, AgentId::OpenCode);
+        assert!(!app.global_scope);
+        app.handle_key(KeyCode::Char('g'));
+        assert!(app.global_scope);
 
         app.handle_key(KeyCode::Char('q'));
         assert!(app.should_quit);
