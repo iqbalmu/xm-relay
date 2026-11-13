@@ -4,6 +4,7 @@ use xm_relay_adapter_antigravity::AntigravityAdapter;
 use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
+use xm_relay_repository as repo;
 
 #[derive(Parser)]
 #[command(
@@ -20,10 +21,26 @@ struct Cli {
 enum Command {
     /// Detect installed agents
     Agents,
+    /// Inspect a project's Git state (read-only)
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Discover and inspect agent sessions
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Show branch, HEAD, working tree status and untracked files
+    Inspect {
+        /// Defaults to the current directory
+        path: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -178,9 +195,85 @@ fn inspect(id: &str, agent: Option<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn project_inspect(path: Option<std::path::PathBuf>, json: bool) -> Result<(), String> {
+    let path = path.unwrap_or_else(|| std::path::PathBuf::from("."));
+    let st = repo::inspect(&path).map_err(|e| e.to_string())?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    if !st.is_repository {
+        println!("{} is not inside a Git repository", path.display());
+        return Ok(());
+    }
+    let branch = match (&st.branch, st.detached) {
+        (Some(b), _) => b.clone(),
+        (None, true) => "(detached HEAD)".into(),
+        _ => "unknown".into(),
+    };
+    println!("root      {}", st.root.as_deref().unwrap_or(""));
+    println!(
+        "branch    {branch}{}",
+        st.upstream
+            .as_ref()
+            .map(|u| format!(
+                " -> {u} (ahead {}, behind {})",
+                st.ahead.unwrap_or(0),
+                st.behind.unwrap_or(0)
+            ))
+            .unwrap_or_default()
+    );
+    println!(
+        "head      {}",
+        st.head_commit.as_deref().unwrap_or("(no commits)")
+    );
+    println!(
+        "state     {}",
+        if st.working_tree_dirty {
+            "DIRTY"
+        } else {
+            "clean"
+        }
+    );
+    println!(
+        "staged    {}   unstaged {}   untracked {}   conflicted {}",
+        st.staged.len(),
+        st.unstaged.len(),
+        st.untracked.len(),
+        st.conflicted.len()
+    );
+    let d = &st.diff_summary;
+    println!(
+        "diff      {} files, +{} -{} ({} binary)",
+        d.files.len(),
+        d.additions,
+        d.deletions,
+        d.binary_files
+    );
+    for c in &st.conflicted {
+        println!("  ! conflict: {c}");
+    }
+    for w in &st.warnings {
+        println!("  ! {w}");
+    }
+    if st.worktrees.len() > 1 {
+        println!("worktrees {}", st.worktrees.len());
+    }
+    for c in st.recent_commits.iter().take(3) {
+        println!("  {} {}", &c.hash[..c.hash.len().min(8)], c.subject);
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Agents => agents(),
+        Command::Project {
+            command: ProjectCommand::Inspect { path, json },
+        } => project_inspect(path, json),
         Command::Sessions {
             command: SessionsCommand::List { agent, limit },
         } => list(agent, limit),
