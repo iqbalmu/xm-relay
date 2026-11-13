@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adapters/omp"]
+members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adapters/omp", "crates/adapters/antigravity"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,3 +11,4 @@ license = "MIT"
 xm-relay-core = { path = "crates/core" }
 xm-relay-adapter-opencode = { path = "crates/adapters/opencode" }
 xm-relay-adapter-omp = { path = "crates/adapters/omp" }
+xm-relay-adapter-antigravity = { path = "crates/adapters/antigravity" }

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
+use xm_relay_adapter_antigravity::AntigravityAdapter;
 use xm_relay_adapter_omp::OmpAdapter;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
 use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
@@ -51,6 +52,9 @@ fn adapters() -> Vec<Box<dyn AgentAdapter>> {
     if let Some(p) = OpenCodeAdapter::default_db_path() {
         v.push(Box::new(OpenCodeAdapter::new(p)));
     }
+    if let Some(p) = AntigravityAdapter::default_root() {
+        v.push(Box::new(AntigravityAdapter::new(p)));
+    }
     if let Some(p) = OmpAdapter::default_sessions_dir() {
         v.push(Box::new(OmpAdapter::new(p)));
     }
@@ -67,7 +71,7 @@ fn select(agent: Option<String>) -> Result<Vec<Box<dyn AgentAdapter>>, String> {
                 .collect();
             if found.is_empty() {
                 Err(format!(
-                    "no adapter for '{name}' yet (implemented: opencode, omp)"
+                    "no adapter for '{name}' yet (implemented: opencode, antigravity-cli, omp)"
                 ))
             } else {
                 Ok(found)

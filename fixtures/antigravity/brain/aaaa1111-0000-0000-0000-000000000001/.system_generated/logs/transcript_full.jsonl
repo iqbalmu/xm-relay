@@ -1,0 +1,9 @@
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2023-11-14T22:13:20Z","content":"Add a login endpoint"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2023-11-14T22:13:21Z","thinking":"hidden","content":"Creating the endpoint.","tool_calls":[{"name":"write_file","args":{"Path":"/work/demo/src/login.rs","Content":"fn login(){}"}},{"name":"run_command","args":{"CommandLine":"cargo test"}},{"name":"edit_file","args":{"Path":"/work/demo/src/x.rs"}},{"name":"run_command","args":{"CommandLine":"sleep 60"}},{"name":"read_file","args":{"Path":"/work/demo/src/y.rs"}}]}
+{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2023-11-14T22:13:22Z","content":"wrote file"}
+{"step_index":3,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2023-11-14T22:13:23Z","content":"Command exited with code 101\n1 failed"}
+{"step_index":4,"source":"MODEL","type":"GENERIC","status":"ERROR","created_at":"2023-11-14T22:13:24Z","content":"no match","error":"no match"}
+{"step_index":5,"source":"MODEL","type":"GENERIC","status":"RUNNING","created_at":"2023-11-14T22:13:25Z","content":"running in background"}
+{"step_index":6,"source":"SYSTEM","type":"CHECKPOINT","status":"DONE","created_at":"2023-11-14T22:13:27Z","content":"Summary of earlier work."}
+{"step_index":7,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","created_at":"2023-11-14T22:13:28Z","content":"quota exceeded"}
+{"step_index":8,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2023-11-14T22:13:29Z","content":"note"}
