@@ -661,35 +661,46 @@ pub fn launch_target_agent(
         target.as_str(),
         workdir.display()
     );
+    let _ = io::stdout().flush();
 
-    let status = match target {
-        AgentId::OpenCode => Command::new("opencode")
-            .current_dir(workdir)
-            .arg("--prompt")
-            .arg(prompt)
-            .arg(".")
-            .status()
-            .map_err(|e| format!("failed to launch `opencode`: {e}"))?,
-        AgentId::AntigravityCli => Command::new("agy")
-            .current_dir(workdir)
-            .arg("-i")
-            .arg(prompt)
-            .status()
-            .map_err(|e| format!("failed to launch `agy`: {e}"))?,
-        AgentId::Omp => Command::new("omp")
-            .current_dir(workdir)
-            .arg(prompt)
-            .status()
-            .map_err(|e| format!("failed to launch `omp`: {e}"))?,
+    let (bin, mut cmd) = match target {
+        AgentId::OpenCode => {
+            let mut c = Command::new("opencode");
+            c.current_dir(workdir).arg("--prompt").arg(prompt).arg(".");
+            ("opencode", c)
+        }
+        AgentId::AntigravityCli => {
+            let mut c = Command::new("agy");
+            c.current_dir(workdir).arg("-i").arg(prompt);
+            ("agy", c)
+        }
+        AgentId::Omp => {
+            let mut c = Command::new("omp");
+            c.current_dir(workdir).arg(prompt);
+            ("omp", c)
+        }
     };
 
-    if !status.success() {
-        return Err(format!(
-            "`{}` exited with status: {status}",
-            target.as_str()
-        ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        Err(format!("failed to launch `{bin}`: {err}"))
     }
-    Ok(())
+
+    #[cfg(not(unix))]
+    {
+        let status = cmd
+            .status()
+            .map_err(|e| format!("failed to launch `{bin}`: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "`{}` exited with status: {status}",
+                target.as_str()
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn resolve_session_title(adapters: &[Box<dyn AgentAdapter>], s: &SessionSummary) -> String {

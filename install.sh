@@ -13,7 +13,7 @@ set -eu
 REPO="${XM_RELAY_REPO:-iqbalmu/xm-relay}"
 INSTALL_DIR="${XM_RELAY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${XM_RELAY_VERSION:-latest}"
-BIN_NAME="xm-relay"
+BIN_NAME="xmrelay"
 
 say() {
     printf '[xm-relay] %s\n' "$*" >&2

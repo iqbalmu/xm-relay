@@ -7,6 +7,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "Local-first, cross-agent CLI tool for verifiable AI coding session handoffs"
 
+[[bin]]
+name = "xmrelay"
+path = "src/main.rs"
+
 [dependencies]
 xm-relay-core.workspace = true
 xm-relay-adapter-opencode.workspace = true

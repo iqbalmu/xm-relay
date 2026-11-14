@@ -171,6 +171,7 @@ fn builds_verifies_redacts_and_detects_missing_file_conflict() {
     let pkg_dir = store.join(&detail.manifest.handoff_id);
     let prompt = generate_continuation_prompt(&detail, &pkg_dir);
     assert!(prompt.contains("Do not assume the handoff summary is fully correct"));
+    assert!(prompt.contains("Match the user's language, tone, and communication style"));
 
     // Delete the verified file on disk -> live validation blocks continuation!
     fs::remove_file(repo.join("src/auth.rs")).unwrap();

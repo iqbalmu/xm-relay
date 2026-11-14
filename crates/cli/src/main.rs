@@ -13,7 +13,7 @@ use xm_relay_security as sec;
 
 #[derive(Parser)]
 #[command(
-    name = "xm-relay",
+    name = "xmrelay",
     version,
     about = "Cross-agent session handoff (read-only inspection)"
 )]
@@ -1118,7 +1118,7 @@ fn interactive_main() -> Result<ExitCode, String> {
     ];
 
     loop {
-        let Some(choice) = interactive::select_menu("xm-relay — Select an action", &main_items, 0)?
+        let Some(choice) = interactive::select_menu("xmrelay — Select an action", &main_items, 0)?
         else {
             return Ok(ExitCode::SUCCESS);
         };

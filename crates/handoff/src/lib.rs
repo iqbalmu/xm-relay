@@ -1255,6 +1255,7 @@ Rules:
 8. Distinguish completed work from reported or inferred work.
 9. Identify missing context and contradictions.
 10. Do not begin implementation until preflight is complete.
+11. Match the user's language, tone, and communication style shown in User Requirements below (unless project instructions specify otherwise).
 
 First produce:
 - Project and branch confirmation.
