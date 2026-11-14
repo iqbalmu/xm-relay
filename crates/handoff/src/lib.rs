@@ -262,15 +262,33 @@ fn truncate_line(s: &str, max: usize) -> String {
     }
 }
 
-fn resolve_file_in_root(root: &Path, raw: &str) -> (String, PathBuf) {
+struct ResolvedFile {
+    display_path: String,
+    full_path: PathBuf,
+    in_workspace: bool,
+}
+
+fn resolve_file_in_root(root: &Path, raw: &str) -> ResolvedFile {
     let p = Path::new(raw);
     if let Ok(rel) = p.strip_prefix(root) {
         let r = rel.to_string_lossy().into_owned();
-        (r.clone(), root.join(r))
+        ResolvedFile {
+            full_path: root.join(&r),
+            display_path: r,
+            in_workspace: true,
+        }
     } else if p.is_absolute() {
-        (raw.to_string(), p.to_path_buf())
+        ResolvedFile {
+            display_path: raw.to_string(),
+            full_path: p.to_path_buf(),
+            in_workspace: false,
+        }
     } else {
-        (raw.to_string(), root.join(p))
+        ResolvedFile {
+            display_path: raw.to_string(),
+            full_path: root.join(p),
+            in_workspace: true,
+        }
     }
 }
 
@@ -350,12 +368,24 @@ fn extract_from_session(
             else {
                 continue;
             };
-            let (display_path, full_path) = resolve_file_in_root(project_root, raw_path);
+            let resolved = resolve_file_in_root(project_root, raw_path);
+            let display_path = resolved.display_path;
             if !seen_files.insert(display_path.clone()) {
                 continue;
             }
+            let exists = resolved.full_path.exists();
+            if !resolved.in_workspace {
+                let msg = if exists {
+                    format!("Session modified file outside workspace: {display_path}")
+                } else {
+                    format!(
+                        "Session modified file outside workspace '{display_path}' (no longer on disk)"
+                    )
+                };
+                uncertainties.push(msg);
+                continue;
+            }
             let eid = format!("E-{:03}", evidence.len() + 1);
-            let exists = full_path.exists();
             let sref = SourceRef {
                 session_id: Some(session.id.clone()),
                 event_id: Some(ev.id.clone()),
@@ -1145,11 +1175,11 @@ pub fn validate_handoff(
         }
     }
 
-    // Re-check verified file claims on live disk
+    // Re-check verified workspace file claims on live disk
     for item in &evidence.items {
         if item.classification == Classification::Verified {
             if let Some(p) = &item.source_ref.path {
-                if !live_root.join(p).exists() {
+                if !Path::new(p).is_absolute() && !live_root.join(p).exists() {
                     conflicts.push(ConflictItem {
                         id: format!("C-LIVE-{}", conflicts.len() + 1),
                         kind: ConflictKind::TaskStatusConflict,

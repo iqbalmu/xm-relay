@@ -184,3 +184,30 @@ fn builds_verifies_redacts_and_detects_missing_file_conflict() {
     assert_eq!(blocked.validation.status, PreflightStatus::Blocked);
     assert_eq!(blocked.manifest.confidence.overall, Confidence::Low);
 }
+
+#[test]
+fn missing_file_outside_workspace_warns_instead_of_blocking() {
+    let t = Tmp::new("outside-ws");
+    let repo = t.0.join("repo");
+    let store = t.0.join("store");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("README.md"), "hello\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+
+    let outside_missing = t.0.join("scratch/main.go");
+    let sess = sample_session(&repo, &outside_missing.display().to_string(), "no-secret");
+
+    let detail = create_handoff(&sess, AgentId::AntigravityCli, Some(&repo), &store).unwrap();
+    assert_eq!(
+        detail.validation.status,
+        PreflightStatus::PassedWithWarnings
+    );
+    assert!(detail.validation.conflicts.is_empty());
+    assert!(detail
+        .validation
+        .warnings
+        .iter()
+        .any(|w| w.contains("outside workspace") && w.contains("no longer on disk")));
+}
