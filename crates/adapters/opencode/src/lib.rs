@@ -471,24 +471,93 @@ impl Builder {
             ParseStatus::Parsed,
         );
 
-        if matches!(name.as_str(), "edit" | "write") && status == ToolStatus::Succeeded {
-            if let Some(path) = input.as_ref().and_then(|i| i["path"].as_str()) {
-                self.report.total_events += 1;
-                let content = EventContent {
-                    text: None,
-                    structured: Some(json!({ "path": path, "tool": name })),
-                };
-                self.push(
-                    id,
-                    ts,
-                    EventKind::FileChange,
-                    Actor::Tool,
-                    content,
-                    None,
-                    ToolStatus::Succeeded,
-                    ParseStatus::Parsed,
-                );
+        if matches!(
+            name.as_str(),
+            "edit" | "write" | "multiedit" | "patch" | "apply_patch"
+        ) && status == ToolStatus::Succeeded
+        {
+            if let Some(inp) = input.as_ref() {
+                for path in extract_opencode_file_paths(&name, inp) {
+                    self.report.total_events += 1;
+                    let content = EventContent {
+                        text: None,
+                        structured: Some(json!({ "path": path, "tool": name })),
+                    };
+                    self.push(
+                        id,
+                        ts,
+                        EventKind::FileChange,
+                        Actor::Tool,
+                        content,
+                        None,
+                        ToolStatus::Succeeded,
+                        ParseStatus::Parsed,
+                    );
+                }
             }
         }
+    }
+}
+
+fn is_uri_path(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
+fn extract_opencode_file_paths(tool_name: &str, inp: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(p) = inp["path"]
+        .as_str()
+        .or_else(|| inp["filePath"].as_str())
+        .filter(|p| !p.is_empty() && !is_uri_path(p))
+    {
+        out.push(p.to_string());
+    }
+    if out.is_empty() && matches!(tool_name, "patch" | "apply_patch") {
+        let patch_txt = inp["patchText"]
+            .as_str()
+            .or_else(|| inp["patch"].as_str())
+            .unwrap_or("");
+        for line in patch_txt.lines() {
+            let trimmed = line.trim();
+            if let Some(p) = trimmed
+                .strip_prefix("*** Update File:")
+                .or_else(|| trimmed.strip_prefix("*** Add File:"))
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && !is_uri_path(p))
+            {
+                if !out.iter().any(|existing| existing == p) {
+                    out.push(p.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod path_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_file_path_and_patch_targets_while_skipping_uris() {
+        assert_eq!(
+            extract_opencode_file_paths("multiedit", &json!({ "filePath": "src/app.rs" })),
+            vec!["src/app.rs".to_string()]
+        );
+        assert!(
+            extract_opencode_file_paths("write", &json!({ "path": "xd://mcp__dart_dtd" }))
+                .is_empty()
+        );
+        let patch = "*** Begin Patch\n*** Update File: src/lib.rs\n*** Add File: src/new.rs\n*** End Patch";
+        assert_eq!(
+            extract_opencode_file_paths("patch", &json!({ "patchText": patch })),
+            vec!["src/lib.rs".to_string(), "src/new.rs".to_string()]
+        );
     }
 }

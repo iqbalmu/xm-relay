@@ -385,6 +385,13 @@ struct ResolvedFile {
     in_workspace: bool,
 }
 
+fn is_agent_internal_artifact(display_path: &str) -> bool {
+    display_path.contains("/.gemini/antigravity-cli/brain/")
+        || display_path.contains("/.omp/agent/")
+        || display_path.contains("/.local/share/xm-relay/")
+        || display_path.contains("/.local/share/opencode/")
+}
+
 fn is_uri_path(raw: &str) -> bool {
     let Some((scheme, _)) = raw.split_once("://") else {
         return false;
@@ -582,6 +589,9 @@ fn extract_from_session(
             }
             let exists = resolved.full_path.exists();
             if !resolved.in_workspace {
+                if is_agent_internal_artifact(&display_path) {
+                    continue;
+                }
                 let msg = if exists {
                     format!("Session modified file outside workspace: {display_path}")
                 } else {
@@ -700,6 +710,7 @@ fn extract_from_session(
                         .as_str()
                         .or_else(|| i["CommandLine"].as_str())
                         .or_else(|| i["path"].as_str())
+                        .or_else(|| i["filePath"].as_str())
                         .or_else(|| i["Path"].as_str())
                 })
                 .unwrap_or_default();

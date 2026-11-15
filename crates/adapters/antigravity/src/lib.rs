@@ -333,27 +333,48 @@ impl Builder {
         let index = v["step_index"].as_u64().unwrap_or(0);
         let native = index.to_string();
         let ts = v["created_at"].as_str();
-        let truncated = v["truncated_fields"]
-            .as_array()
-            .is_some_and(|a| !a.is_empty());
+        // `thinking` is deliberately not transferred, so truncation of `thinking` alone is not lossy.
+        let truncated = v["truncated_fields"].as_array().is_some_and(|a| {
+            a.iter()
+                .any(|f| f.as_str().is_none_or(|s| s != "thinking"))
+        });
         let before = self.events.len();
 
         match v["type"].as_str().unwrap_or("") {
             "USER_INPUT" => {
                 self.report.total_events += 1;
-                let media = v["media"].as_array().map_or(0, Vec::len);
-                let mut c = Self::text(v);
-                c.structured = (media > 0).then(|| json!({ "attachment_count": media }));
-                self.push(
-                    &native,
-                    ts,
-                    EventKind::UserMessage,
-                    Actor::User,
-                    c,
-                    None,
-                    ToolStatus::Unknown,
-                    ParseStatus::Parsed,
-                );
+                let raw_text = v["content"].as_str();
+                if raw_text.is_some_and(is_system_wakeup_input) {
+                    self.push(
+                        &native,
+                        ts,
+                        EventKind::Unknown,
+                        Actor::System,
+                        EventContent {
+                            text: None,
+                            structured: Some(json!({ "system_wakeup": true })),
+                        },
+                        None,
+                        ToolStatus::Unknown,
+                        ParseStatus::Parsed,
+                    );
+                } else {
+                    let media = v["media"].as_array().map_or(0, Vec::len);
+                    let c = EventContent {
+                        text: raw_text.map(extract_user_request_text),
+                        structured: (media > 0).then(|| json!({ "attachment_count": media })),
+                    };
+                    self.push(
+                        &native,
+                        ts,
+                        EventKind::UserMessage,
+                        Actor::User,
+                        c,
+                        None,
+                        ToolStatus::Unknown,
+                        ParseStatus::Parsed,
+                    );
+                }
             }
             "PLANNER_RESPONSE" => {
                 // Results follow their planner step; calls left unanswered must not pair
@@ -545,6 +566,26 @@ fn exit_code(output: &str) -> Option<i32> {
     digits.parse().ok()
 }
 
+/// True when a `USER_INPUT` step is actually a synthetic `<SYSTEM_MESSAGE>` wakeup
+/// (e.g. background task notification) with no `<USER_REQUEST>`.
+fn is_system_wakeup_input(raw: &str) -> bool {
+    raw.contains("<SYSTEM_MESSAGE>") && !raw.contains("<USER_REQUEST>")
+}
+
+/// Strip `<USER_REQUEST>...</USER_REQUEST>` and trailing `<ADDITIONAL_METADATA>` wrappers
+/// added by Antigravity CLI around user prompts.
+fn extract_user_request_text(raw: &str) -> String {
+    if let Some((_, after_open)) = raw.split_once("<USER_REQUEST>") {
+        if let Some((inner, _)) = after_open.split_once("</USER_REQUEST>") {
+            return inner.trim().to_string();
+        }
+    }
+    if let Some((before_meta, _)) = raw.split_once("<ADDITIONAL_METADATA>") {
+        return before_meta.trim().to_string();
+    }
+    raw.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,5 +611,15 @@ mod tests {
         assert_eq!(exit_code("Command exited with code 101\nx"), Some(101));
         assert_eq!(exit_code("Command exited with code 0"), Some(0));
         assert_eq!(exit_code("still running"), None);
+    }
+
+    #[test]
+    fn strips_user_request_tags_and_detects_system_wakeups() {
+        let wrapped = "<USER_REQUEST>\nbuat fitur export csv\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: ...\n</ADDITIONAL_METADATA>";
+        assert_eq!(extract_user_request_text(wrapped), "buat fitur export csv");
+        assert!(!is_system_wakeup_input(wrapped));
+
+        let sys = "The following is a <SYSTEM_MESSAGE>\n<SYSTEM_MESSAGE>\nTask finished\n</SYSTEM_MESSAGE>";
+        assert!(is_system_wakeup_input(sys));
     }
 }
