@@ -18,7 +18,15 @@ const SKIP_DIRS: &[&str] = &[
     "dist",
     "build",
     ".venv",
+    "venv",
     "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".cache",
+    ".next",
+    ".turbo",
 ];
 
 /// (relative path, kind). Only widely documented names; extend with evidence.
@@ -100,6 +108,10 @@ fn walk(root: &Path, dir: &Path, start: &Path, depth: usize, set: &mut Instructi
         }
     }
     if depth >= MAX_DEPTH {
+        set.warnings.push(format!(
+            "instruction search depth limit ({MAX_DEPTH}) reached under {}; deeper files are not discovered",
+            dir.display()
+        ));
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {

@@ -181,3 +181,34 @@ fn symlinks_are_not_followed() {
         assert!(l.is_symlink && l.sha256.is_none());
     }
 }
+
+#[test]
+fn redact_free_text_cleans_user_controlled_fields() {
+    use xm_relay_repository::{redact_free_text, CommitInfo, RepositoryState};
+    let aws = format!("AKIA{}", "A".repeat(16));
+    let stripe = format!("sk_live_{}", "a".repeat(24));
+    let ghp = format!("ghp_{}", "A".repeat(36));
+    let mut st = RepositoryState {
+        branch: Some("main".into()),
+        upstream: Some(format!("origin/leak/{stripe}")),
+        recent_commits: vec![CommitInfo {
+            hash: "deadbeef".into(),
+            subject: format!("import key={aws}"),
+            date: "2026-01-01".into(),
+        }],
+        warnings: vec![format!("leaked {ghp}")],
+        ..RepositoryState::default()
+    };
+
+    let n = redact_free_text(&mut st);
+    assert_eq!(n, 3);
+    assert_eq!(st.branch.as_deref(), Some("main"));
+    assert!(st
+        .upstream
+        .as_deref()
+        .is_some_and(|s| s.contains("[REDACTED:stripe_key]")));
+    assert!(st.recent_commits[0]
+        .subject
+        .contains("[REDACTED:aws_access_key]"));
+    assert!(st.warnings[0].contains("[REDACTED:github_token]"));
+}

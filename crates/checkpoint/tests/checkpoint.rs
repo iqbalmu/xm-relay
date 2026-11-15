@@ -102,3 +102,53 @@ fn creates_verifies_redacts_and_detects_drift() {
     assert!(!tampered.checksums_valid);
     assert!(compare_with_workspace(&store, &m.checkpoint_id, Some(&repo)).is_err());
 }
+
+#[test]
+fn non_utf8_patch_survives_and_drift_is_detected() {
+    let t = Tmp::new("latin1");
+    let repo = t.0.join("repo");
+    let store = t.0.join("store");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("d.txt"), b"caf\xe9 v1\n").unwrap(); // latin-1 é
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+    // Dirty the tracked file while keeping the invalid byte region.
+    fs::write(repo.join("d.txt"), b"caf\xe9 v2\n").unwrap();
+
+    let m = create_checkpoint(&repo, &store).unwrap();
+    let patch = fs::read(store.join(&m.checkpoint_id).join("working-tree.patch")).unwrap();
+    // The invalid byte survived byte-exact: the patch stays applicable.
+    let needle = b"caf\xe9 v2";
+    assert!(patch.windows(needle.len()).any(|w| w == needle));
+
+    // Real content change inside the invalid-UTF-8 region must be detected.
+    fs::write(repo.join("d.txt"), b"caf\xe9 v3\n").unwrap();
+    let drift = compare_with_workspace(&store, &m.checkpoint_id, Some(&repo)).unwrap();
+    assert!(
+        drift.patch_sha256_changed,
+        "lossy conversion hid a real change"
+    );
+}
+
+#[test]
+fn repository_state_json_is_redacted() {
+    let t = Tmp::new("repostate");
+    let repo = t.0.join("repo");
+    let store = t.0.join("store");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    let tok = format!("ghp_{}", "A".repeat(36));
+    git(&repo, &["commit", "-qm", &format!("add files token={tok}")]);
+
+    let m = create_checkpoint(&repo, &store).unwrap();
+    let rs =
+        fs::read_to_string(store.join(&m.checkpoint_id).join("repository-state.json")).unwrap();
+    assert!(
+        !rs.contains(&tok),
+        "raw token leaked into repository-state.json"
+    );
+    assert!(rs.contains("[REDACTED:github_token]"));
+}

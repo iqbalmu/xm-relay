@@ -82,7 +82,10 @@ pub fn normalize_timestamp(s: &str) -> String {
         None => (s.as_str(), ""),
     };
     let body = match body.split_once('.') {
-        Some((head, frac)) => format!("{head}.{:0<3}", &frac[..frac.len().min(3)]),
+        Some((head, frac)) => {
+            let ms: String = frac.chars().take(3).collect();
+            format!("{head}.{ms:0<3}")
+        }
         None => body.to_string(),
     };
     let tz = if tz == "+00:00" { "Z" } else { tz };
@@ -90,7 +93,31 @@ pub fn normalize_timestamp(s: &str) -> String {
 }
 
 fn file_uri_to_path(u: &str) -> String {
-    u.strip_prefix("file://").unwrap_or(u).to_string()
+    let raw = u.strip_prefix("file://").unwrap_or(u);
+    // `file://localhost/path` names the local machine.
+    let raw = raw.strip_prefix("localhost/").unwrap_or(raw);
+    percent_decode(raw)
+}
+
+/// Decode `%XX` escapes; malformed escapes pass through byte-for-byte.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(((h * 16) + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl AgentAdapter for AntigravityAdapter {
@@ -144,11 +171,7 @@ impl AgentAdapter for AntigravityAdapter {
                 .ok()
                 .and_then(|v| v.into_iter().next())
                 .map(|u| file_uri_to_path(&u));
-            if filter
-                .project_root
-                .as_ref()
-                .is_some_and(|p| root.as_ref() != Some(p))
-            {
+            if !filter.matches_project(root.as_deref()) {
                 continue;
             }
             out.push(SessionSummary {

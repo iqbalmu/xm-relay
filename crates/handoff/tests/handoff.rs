@@ -212,3 +212,40 @@ fn missing_file_outside_workspace_warns_instead_of_blocking() {
         .iter()
         .any(|w| w.contains("outside workspace") && w.contains("no longer on disk")));
 }
+
+#[test]
+fn trimmed_checksums_file_does_not_hide_tampering() {
+    let t = Tmp::new("trimmed");
+    let repo = t.0.join("repo");
+    let store = t.0.join("store");
+    fs::create_dir_all(repo.join("src")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("src/a.rs"), "fn a() {}\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+
+    let secret = format!("AKIA{}", "ABCDEFGHIJKLMNOP");
+    let sess = sample_session(&repo, "src/a.rs", &secret);
+    let detail = create_handoff(&sess, AgentId::Omp, Some(&repo), &store).unwrap();
+    assert!(detail.validation.checksums_valid);
+
+    // Drop the context.md line from checksums.txt, then tamper with the file
+    // it used to describe. The reverse check must still catch it.
+    let pkg = store.join(&detail.manifest.handoff_id);
+    let sums = fs::read_to_string(pkg.join("checksums.txt")).unwrap();
+    let trimmed: String = sums
+        .lines()
+        .filter(|l| !l.contains("  context.md"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(pkg.join("checksums.txt"), trimmed).unwrap();
+    fs::write(pkg.join("context.md"), "tampered context").unwrap();
+
+    let re = validate_handoff(&store, &detail.manifest.handoff_id, Some(&repo)).unwrap();
+    assert!(!re.validation.checksums_valid);
+    assert!(re
+        .validation
+        .checksum_errors
+        .iter()
+        .any(|e| e.contains("not covered by checksums.txt") && e.contains("context.md")));
+}

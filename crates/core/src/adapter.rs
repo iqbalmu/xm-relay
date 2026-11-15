@@ -1,5 +1,6 @@
 use crate::agent::AgentId;
 use crate::session::Session;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -15,7 +16,7 @@ pub struct AdapterCapabilities {
     pub launch_agent: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInstallation {
     pub agent: AgentId,
     pub available: bool,
@@ -29,7 +30,25 @@ pub struct SessionFilter {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl SessionFilter {
+    /// Project-root matching for stored session roots: exact match, or a
+    /// session started inside a subdirectory of the filtered project.
+    pub fn matches_project(&self, root: Option<&str>) -> bool {
+        match &self.project_root {
+            None => true,
+            Some(f) => match root {
+                None => false,
+                Some(r) => {
+                    r == f
+                        || r.strip_prefix(f)
+                            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+                }
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub id: String,
     pub agent: AgentId,

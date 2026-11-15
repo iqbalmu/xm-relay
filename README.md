@@ -110,10 +110,10 @@ Every subcommand supports `--help` and most provide `--json` for scripting.
 
 | Command | Description |
 |---|---|
-| `xm-relay update` | Self-update `xm-relay` in-place to the latest GitHub release |
-| `xm-relay agents` | Detect installed coding agents and their session data paths |
+| `xm-relay update` | Self-update in-place: downloads the release tarball, verifies its published SHA-256, swaps the binary atomically, keeps one `.xmrelay.bak` backup |
+| `xm-relay agents` | Detect installed coding agents and their session data paths (`--json`) |
 | `xm-relay status [path]` | Summary of detected agents, live Git state, checkpoints, and handoffs |
-| `xm-relay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`) |
+| `xm-relay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`, `--json`) |
 | `xm-relay sessions search <query>` | Search sessions in the active directory (`-g`/`--global` for all dirs) |
 | `xm-relay sessions inspect <id>` | Inspect normalized events and transparency `parse_report` |
 | `xm-relay project inspect [path]` | Read-only Git status, diff stats, untracked inventory, and recent commits |
@@ -150,10 +150,19 @@ Packages are stored in `~/.local/share/xm-relay/handoffs/<handoff-id>/` (or `$XD
 
 ---
 
+## Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Runtime error (bad path, unreadable data, download failure, ...) |
+| `2` | Reserved for "needs attention": `project scan` found a potential secret; `handoff create`/`handoff validate`/`continue` hit a Blocked or Failed preflight; plus clap usage errors |
+
 ## 🔒 Security, Privacy & Known Limitations
 
 - **Strictly Read-Only:** `xm-relay` never writes to agent databases/transcripts and never runs destructive Git operations (`reset`, `clean`, `checkout`, `stash`, `commit`).
 - **Heuristic Secret Redaction:** The scanner in `xm-relay-security` is best-effort. **A clean scan is not proof that a package is free of secrets.** Always review `context.md` and `patches/working-tree.patch` before sharing a handoff package externally.
+- **Continuation Prompt via argv:** Launching a target agent with a pre-loaded prompt passes it as a command-line argument, so it is visible system-wide via `ps`/`/proc/<pid>/cmdline` until the target process replaces it. This is a limitation of the target CLIs' flag-based prompt handoff; use "print to stdout" or "copy to clipboard" in shared environments.
 - **Untracked Files:** `working-tree.patch` contains tracked file diffs only. Untracked files are inventoried with size and SHA-256 in `repository-state.json` (and symlinks are never followed).
 - **Antigravity CLI Transcripts:** Conversations without a JSONL transcript in `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/` (i.e. opaque SQLite blobs only) are skipped to uphold fail-safe parsing.
 

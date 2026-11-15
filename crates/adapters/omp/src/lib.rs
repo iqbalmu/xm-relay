@@ -98,7 +98,13 @@ impl AgentAdapter for OmpAdapter {
     fn list_sessions(&self, filter: &SessionFilter) -> AdapterResult<Vec<SessionSummary>> {
         let mut out = Vec::new();
         for path in self.files()? {
-            let f = File::open(&path).map_err(|e| io_err(&path, e))?;
+            let Ok(f) = File::open(&path) else {
+                eprintln!(
+                    "xm-relay: warning: skipping unreadable session file: {}",
+                    path.display()
+                );
+                continue;
+            };
             let (mut id, mut cwd, mut title, mut updated, mut count) =
                 (None, None, None, None, 0u64);
             for line in BufReader::new(f).lines().map_while(Result::ok) {
@@ -122,11 +128,7 @@ impl AgentAdapter for OmpAdapter {
                 }
             }
             let Some(id) = id else { continue };
-            if filter
-                .project_root
-                .as_ref()
-                .is_some_and(|p| cwd.as_ref() != Some(p))
-            {
+            if !filter.matches_project(cwd.as_deref()) {
                 continue;
             }
             out.push(SessionSummary {
@@ -343,10 +345,21 @@ impl Builder {
                     .as_array()
                     .map_or(0, |a| a.iter().filter(|b| b["type"] == "image").count());
                 let structured = (images > 0).then(|| json!({ "attachment_count": images }));
-                let content = EventContent {
-                    text: text_of(&m["content"]),
-                    structured,
+                let text = text_of(&m["content"]);
+                // Schema drift: no text and no attachments means the vendor
+                // likely changed the message shape; record as lossy instead of
+                // silently exporting an empty user message.
+                let parse_status = if text.is_none() && structured.is_none() {
+                    self.report.unsupported.push(UnsupportedEvent {
+                        position: pos,
+                        native_kind: Some("user".into()),
+                        reason: "user message carries no text payload (schema drift?)".into(),
+                    });
+                    ParseStatus::Partial
+                } else {
+                    ParseStatus::Parsed
                 };
+                let content = EventContent { text, structured };
                 self.push(
                     id,
                     ts,
@@ -355,7 +368,7 @@ impl Builder {
                     content,
                     None,
                     ToolStatus::Unknown,
-                    ParseStatus::Parsed,
+                    parse_status,
                 );
             }
             "assistant" => self.assistant(pos, id, ts, m),

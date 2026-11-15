@@ -1,6 +1,38 @@
 use rusqlite::Connection;
 use xm_relay_adapter_opencode::OpenCodeAdapter;
-use xm_relay_core::{AgentAdapter, EventKind, SessionFilter, ToolStatus};
+use xm_relay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
+
+fn drift_db() -> (tempdir::Dir, OpenCodeAdapter) {
+    let sql = include_str!("../../../../fixtures/opencode/basic.sql");
+    let dir = tempdir::Dir::new();
+    let path = dir.path().join("opencode.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(sql).unwrap();
+    // A drifted user payload: no "text" field, no attachments.
+    conn.execute(
+        "INSERT INTO session_message VALUES ('m20','ses_1','user',9,1700000009000,1700000009000,'{\"files\":[]}')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    (dir, OpenCodeAdapter::new(path))
+}
+
+#[test]
+fn user_message_without_text_payload_is_lossy() {
+    let (_d, a) = drift_db();
+    let s = a.read_session("ses_1").unwrap();
+    assert!(
+        s.parse_report.is_lossy(),
+        "schema drift must mark the report lossy"
+    );
+    let ev = s
+        .events
+        .iter()
+        .find(|e| e.kind == EventKind::UserMessage && e.parse_status == ParseStatus::Partial)
+        .expect("drifted user message should be Partial");
+    assert!(ev.content.text.is_none());
+}
 
 fn fixture_db() -> (tempdir::Dir, OpenCodeAdapter) {
     let sql = include_str!("../../../../fixtures/opencode/basic.sql");

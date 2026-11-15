@@ -6,13 +6,48 @@ use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType};
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use xm_relay_core::{Actor, AgentAdapter, AgentId, EventKind, SessionFilter, SessionSummary};
+
+/// RAII guard: leaves raw mode and shows the cursor on drop, so `?` errors,
+/// panics, and early returns can never leave the terminal wedged.
+struct RawModeGuard {
+    stdout: io::Stdout,
+}
+
+impl RawModeGuard {
+    fn enter() -> Result<Self, String> {
+        enable_raw_mode().map_err(|e| e.to_string())?;
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, Hide);
+        Ok(Self { stdout })
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = execute!(self.stdout, Show);
+        let _ = disable_raw_mode();
+    }
+}
+
+/// Restores a usable terminal before reporting an interactive-mode panic.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), Show);
+        eprintln!("{info}");
+    }));
+}
 use xm_relay_handoff as ho;
+
+/// Sentinel error returned when the user hits Ctrl-C in an interactive menu;
+/// `main` maps it to exit code 130 (shell convention) without an error line.
+pub const CTRL_C: &str = "interactive: interrupted (ctrl-c)";
 
 /// Usable columns per terminal row. The last column is never written so the
 /// cursor cannot enter pending-wrap state; falls back to 79 when the size
@@ -57,8 +92,7 @@ pub fn select_menu(
     let max_visible = 14usize;
     let mut stdout = io::stdout();
 
-    enable_raw_mode().map_err(|e| e.to_string())?;
-    let _ = execute!(stdout, Hide);
+    let guard = RawModeGuard::enter()?;
 
     let mut drawn_lines = 0usize;
     let res = loop {
@@ -132,7 +166,7 @@ pub fn select_menu(
                 KeyCode::Enter => break Ok(Some(idx)),
                 KeyCode::Esc | KeyCode::Char('q') => break Ok(None),
                 KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Ok(None)
+                    break Err(CTRL_C.to_string())
                 }
                 _ => {}
             },
@@ -148,8 +182,7 @@ pub fn select_menu(
             Clear(ClearType::FromCursorDown)
         );
     }
-    let _ = execute!(stdout, Show);
-    let _ = disable_raw_mode();
+    drop(guard);
 
     if let Ok(Some(chosen)) = &res {
         let _ = execute!(
@@ -181,8 +214,7 @@ pub fn pick_session(
     let max_visible = 12usize;
     let mut stdout = io::stdout();
 
-    enable_raw_mode().map_err(|e| e.to_string())?;
-    let _ = execute!(stdout, Hide);
+    let guard = RawModeGuard::enter()?;
 
     let mut drawn_lines = 0usize;
     let mut cached_scope: Option<bool> = None;
@@ -402,9 +434,13 @@ pub fn pick_session(
                             idx = 0;
                         }
                         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                            break Ok(None);
+                            break Err(CTRL_C.to_string());
                         }
-                        KeyCode::Char(c) => {
+                        KeyCode::Char(c)
+                            if !k
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        {
                             search_query.push(c);
                             idx = 0;
                         }
@@ -461,7 +497,7 @@ pub fn pick_session(
                         }
                     }
                     KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Ok(None);
+                        break Err(CTRL_C.to_string());
                     }
                     _ => {}
                 }
@@ -478,8 +514,7 @@ pub fn pick_session(
             Clear(ClearType::FromCursorDown)
         );
     }
-    let _ = execute!(stdout, Show);
-    let _ = disable_raw_mode();
+    drop(guard);
 
     match res {
         Ok(Some((agent, id, title))) => {
@@ -614,13 +649,18 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
     };
 
     match action {
-        0 => {
-            let method = copy_to_clipboard(&prompt);
-            println!(
-                "\n✓ Continuation prompt copied to clipboard ({method})!\n  Open `{}` and paste (Ctrl+V / Cmd+V).",
+        0 => match copy_to_clipboard(&prompt) {
+            Some(method) => println!(
+                "\n✓ Continuation prompt copied to clipboard ({method}).\n  Open `{}` and paste (Ctrl+V / Cmd+V).",
                 m.target_agent.as_str()
-            );
-        }
+            ),
+            None => {
+                println!(
+                    "\n⚠ No clipboard backend available. Continuation prompt printed below:\n"
+                );
+                println!("{}", prompt.trim());
+            }
+        },
         1 => {
             println!("\n{}", prompt.trim());
         }
@@ -634,8 +674,11 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
     Ok(())
 }
 
-/// Copy text to system clipboard using available platform tools + OSC-52 fallback.
-pub fn copy_to_clipboard(text: &str) -> String {
+/// Copy text to the system clipboard. Returns the backend used, or `None` when
+/// nothing works; OSC-52 is only tried as a last resort and only when stdout is
+/// a terminal (many terminals and SSH clients silently drop it, and it would
+/// otherwise corrupt redirected output).
+pub fn copy_to_clipboard(text: &str) -> Option<String> {
     let candidates: &[(&str, &[&str])] = &[
         ("wl-copy", &[]),
         ("xclip", &["-selection", "clipboard"]),
@@ -657,15 +700,17 @@ pub fn copy_to_clipboard(text: &str) -> String {
             }
             if let Ok(status) = child.wait() {
                 if status.success() {
-                    emit_osc52(text);
-                    return (*bin).to_string();
+                    return Some((*bin).to_string());
                 }
             }
         }
     }
 
-    emit_osc52(text);
-    "OSC-52 terminal clipboard".to_string()
+    if io::stdout().is_terminal() && text.len() <= 100_000 {
+        emit_osc52(text);
+        return Some("OSC-52 terminal clipboard".to_string());
+    }
+    None
 }
 
 fn emit_osc52(text: &str) {
@@ -780,7 +825,8 @@ fn resolve_session_title(adapters: &[Box<dyn AgentAdapter>], s: &SessionSummary)
             }
         }
     }
-    format!("Session {}", &s.id[..s.id.len().min(8)])
+    let short: String = s.id.chars().take(8).collect();
+    format!("Session {short}")
 }
 
 fn clean_snippet(raw: &str, max_chars: usize) -> String {

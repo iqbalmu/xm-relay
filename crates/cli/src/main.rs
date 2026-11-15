@@ -1,6 +1,7 @@
 mod interactive;
 
 use clap::{Parser, Subcommand};
+use sha2::Digest;
 use std::process::ExitCode;
 use xm_relay_adapter_antigravity::AntigravityAdapter;
 use xm_relay_adapter_omp::OmpAdapter;
@@ -25,7 +26,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Detect installed agents
-    Agents,
+    Agents {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect a project's Git state (read-only)
     Project {
         #[command(subcommand)]
@@ -210,8 +215,12 @@ enum SessionsCommand {
         project: Option<std::path::PathBuf>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
-    /// Search sessions by keyword (defaults to active project directory; pass -g/--global for all)
+    /// Search sessions by keyword (defaults to active project directory; pass -g/--global for all).
+    /// Scans the 200 newest sessions per adapter; older sessions are not searched.
     Search {
         query: String,
         #[arg(long)]
@@ -271,23 +280,50 @@ fn select(agent: Option<String>) -> Result<Vec<Box<dyn AgentAdapter>>, String> {
     }
 }
 
-fn agents() -> Result<(), String> {
+fn agents(json: bool) -> Result<(), String> {
+    let mut rows = Vec::new();
     for id in AgentId::ALL {
         match adapters().into_iter().find(|a| a.id() == id) {
             Some(a) => {
                 let i = a.detect().map_err(|e| e.to_string())?;
-                println!(
-                    "{:<16} {} version={} {}",
-                    id.as_str(),
-                    if i.available { "found" } else { "not found" },
-                    i.version.as_deref().unwrap_or("unknown"),
-                    i.data_path
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                );
+                rows.push((id, i));
             }
-            None => println!("{:<16} adapter not implemented", id.as_str()),
+            None => {
+                // No adapter compiled in for this agent.
+                if !json {
+                    println!("{:<16} adapter not implemented", id.as_str());
+                }
+            }
         }
+    }
+    if json {
+        let v: Vec<_> = rows
+            .iter()
+            .map(|(id, i)| {
+                serde_json::json!({
+                    "agent": id.as_str(),
+                    "available": i.available,
+                    "version": i.version,
+                    "data_path": i.data_path.as_ref().map(|p| p.display().to_string()),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| format!("serialize agents: {e}"))?
+        );
+        return Ok(());
+    }
+    for (id, i) in rows {
+        println!(
+            "{:<16} {} version={} {}",
+            id.as_str(),
+            if i.available { "found" } else { "not found" },
+            i.version.as_deref().unwrap_or("unknown"),
+            i.data_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
     }
     Ok(())
 }
@@ -307,6 +343,7 @@ fn list(
     global: bool,
     project: Option<std::path::PathBuf>,
     limit: usize,
+    json: bool,
 ) -> Result<(), String> {
     let filter = SessionFilter {
         project_root: resolve_scope_root(global, project),
@@ -321,6 +358,20 @@ fn list(
     }
     all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     all.truncate(limit);
+    if all.is_empty() && !global {
+        if let Some(p) = &filter.project_root {
+            eprintln!(
+                "note: no sessions matched project root {p} (sessions in subdirectories also match; try -g/--global)"
+            );
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&all).map_err(|e| format!("serialize sessions: {e}"))?
+        );
+        return Ok(());
+    }
     for s in all {
         println!(
             "{:<15} {}  {}  {:>5} ev  {}  {}",
@@ -336,10 +387,22 @@ fn list(
 }
 
 fn inspect(id: &str, agent: Option<String>, json: bool) -> Result<(), String> {
+    // Distinguish a typo'd id from a real adapter failure (locked DB, unreadable
+    // file): surface the first adapter error instead of hiding it as "not found".
+    let mut first_err: Option<String> = None;
     let s = select(agent)?
         .iter()
-        .find_map(|a| a.read_session(id).ok())
-        .ok_or_else(|| format!("session '{id}' not found"))?;
+        .find_map(|a| match a.read_session(id) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                first_err.get_or_insert_with(|| format!("{}: {e}", a.id().as_str()));
+                None
+            }
+        })
+        .ok_or_else(|| match &first_err {
+            Some(e) => format!("session '{id}' could not be read ({e})"),
+            None => format!("session '{id}' not found"),
+        })?;
     if json {
         println!(
             "{}",
@@ -505,6 +568,7 @@ fn project_scan(path: Option<std::path::PathBuf>, json: bool) -> Result<bool, St
     let root = std::path::PathBuf::from(st.root.clone().ok_or("not inside a Git repository")?);
     let mut hits: Vec<ScanHit> = Vec::new();
     let mut scanned = 0usize;
+    let mut skipped = 0usize;
 
     let mut names: Vec<&str> = st.untracked.iter().map(|f| f.path.as_str()).collect();
     names.extend(
@@ -526,14 +590,20 @@ fn project_scan(path: Option<std::path::PathBuf>, json: bool) -> Result<bool, St
         }
     }
     for f in &st.untracked {
-        let Some(size) = f.size else { continue };
+        let Some(size) = f.size else {
+            skipped += 1;
+            continue;
+        };
         if f.is_symlink || size > 5 * 1024 * 1024 {
+            skipped += 1;
             continue;
         }
         let Ok(bytes) = std::fs::read(root.join(&f.path)) else {
+            skipped += 1;
             continue;
         };
         let Ok(text) = String::from_utf8(bytes) else {
+            skipped += 1;
             continue;
         };
         scanned += 1;
@@ -588,7 +658,12 @@ fn project_scan(path: Option<std::path::PathBuf>, json: bool) -> Result<bool, St
                     .unwrap_or_default()
             );
         }
-        println!("{} finding(s) in {} scanned source(s). Heuristic scan: absence of findings is not proof of safety.", hits.len(), scanned);
+        println!(
+            "{} finding(s) in {} scanned source(s), {} skipped (symlink, oversized, unreadable, or non-UTF-8). Heuristic scan: absence of findings is not proof of safety.",
+            hits.len(),
+            scanned,
+            skipped
+        );
     }
     Ok(!hits.is_empty())
 }
@@ -726,6 +801,9 @@ fn checkpoint_cmd(cmd: CheckpointCommand) -> Result<(), String> {
                 for f in &drift.untracked_modified {
                     println!("  ~ untracked: {f}");
                 }
+                for f in &drift.untracked_unverified {
+                    println!("  ? untracked (content not verifiable): {f}");
+                }
             }
         }
     }
@@ -743,6 +821,20 @@ fn handoff_store_dir(custom: Option<std::path::PathBuf>) -> Result<std::path::Pa
     custom
         .or_else(ho::default_store_dir)
         .ok_or_else(|| "cannot resolve handoff store directory".into())
+}
+
+/// Exit-code contract for preflight results: Blocked/Failed → 2, otherwise 0.
+/// Shared by `handoff create`, `validate`, and `continue` so scripts get one
+/// consistent rule.
+fn preflight_exit(status: &ho::PreflightStatus) -> u8 {
+    match status {
+        ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed => 2,
+        ho::PreflightStatus::Passed | ho::PreflightStatus::PassedWithWarnings => 0,
+    }
+}
+
+fn preflight_exit_code(status: &ho::PreflightStatus) -> ExitCode {
+    ExitCode::from(preflight_exit(status))
 }
 
 fn print_validation(d: &ho::HandoffDetail) {
@@ -799,10 +891,20 @@ fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
             json,
         } => {
             let target = parse_agent_id(&to)?;
+            let mut first_err: Option<String> = None;
             let sess = select(from)?
                 .iter()
-                .find_map(|a| a.read_session(&session).ok())
-                .ok_or_else(|| format!("session '{session}' not found"))?;
+                .find_map(|a| match a.read_session(&session) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        first_err.get_or_insert_with(|| format!("{}: {e}", a.id().as_str()));
+                        None
+                    }
+                })
+                .ok_or_else(|| match &first_err {
+                    Some(e) => format!("session '{session}' could not be read ({e})"),
+                    None => format!("session '{session}' not found"),
+                })?;
             let d = ho::create_handoff(
                 &sess,
                 target,
@@ -818,7 +920,9 @@ fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
             } else {
                 print_validation(&d);
             }
-            Ok(ExitCode::SUCCESS)
+            // Scripts must be able to rely on `create` to catch blocking
+            // conflicts just like `validate`/`continue` do.
+            Ok(preflight_exit_code(&d.validation.status))
         }
         HandoffCommand::List { store, json } => {
             let list = ho::list_handoffs(&handoff_store_dir(store)?).map_err(|e| e.to_string())?;
@@ -881,13 +985,7 @@ fn handoff_cmd(cmd: HandoffCommand) -> Result<ExitCode, String> {
             } else {
                 print_validation(&d);
             }
-            let code = match d.validation.status {
-                ho::PreflightStatus::Passed | ho::PreflightStatus::PassedWithWarnings => {
-                    ExitCode::SUCCESS
-                }
-                ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed => ExitCode::from(2),
-            };
-            Ok(code)
+            Ok(preflight_exit_code(&d.validation.status))
         }
         HandoffCommand::Export {
             handoff_id,
@@ -992,7 +1090,12 @@ fn status_cmd(path: Option<std::path::PathBuf>, json: bool) -> Result<(), String
     let mut ags = Vec::new();
     for a in adapters() {
         if let Ok(i) = a.detect() {
-            ags.push((i.agent.as_str().to_string(), i.available, i.version));
+            ags.push(serde_json::json!({
+                "agent": i.agent.as_str(),
+                "available": i.available,
+                "version": i.version,
+                "data_path": i.data_path.as_ref().map(|p| p.display().to_string()),
+            }));
         }
     }
     if json {
@@ -1016,7 +1119,15 @@ fn status_cmd(path: Option<std::path::PathBuf>, json: bool) -> Result<(), String
         println!(
             "agents      {}",
             ags.iter()
-                .map(|(n, av, _)| format!("{n}={}", if *av { "found" } else { "missing" }))
+                .map(|a| format!(
+                    "{}={}",
+                    a["agent"].as_str().unwrap_or("?"),
+                    if a["available"].as_bool().unwrap_or(false) {
+                        "found"
+                    } else {
+                        "missing"
+                    }
+                ))
                 .collect::<Vec<_>>()
                 .join("  ")
         );
@@ -1061,56 +1172,150 @@ fn continue_cmd(
         for e in &d.validation.checksum_errors {
             eprintln!("  - checksum error: {e}");
         }
-        return Ok(ExitCode::from(2));
+        return Ok(preflight_exit_code(&d.validation.status));
     }
     let pkg_dir = sdir.join(id);
     println!("{}", ho::generate_continuation_prompt(&d, &pkg_dir));
     Ok(ExitCode::SUCCESS)
 }
 
-fn update_cmd(version: &str) -> Result<(), String> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/bin")))
-        .ok_or_else(|| "cannot determine target installation directory".to_string())?;
+/// Release target triple for prebuilt archives (see .github/workflows/release.yml).
+fn release_target() -> Result<&'static str, String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        (os, arch) => Err(format!(
+            "no prebuilt release for {arch}-{os}; use cargo install --git https://github.com/iqbalmu/xm-relay.git"
+        )),
+    }
+}
 
+fn release_asset_url(version: &str, suffix: &str) -> String {
+    let asset = format!("xmrelay-{}{suffix}", release_target().unwrap_or_default());
+    if version == "latest" {
+        format!("https://github.com/iqbalmu/xm-relay/releases/latest/download/{asset}")
+    } else {
+        format!("https://github.com/iqbalmu/xm-relay/releases/download/{version}/{asset}")
+    }
+}
+
+fn curl_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "300", "--retry", "2", url])
+        .output()
+        .map_err(|e| format!("failed to run 'curl': {e}"))?;
+    if !out.status.success() {
+        return Err(format!("download failed ({}): {url}", out.status));
+    }
+    Ok(out.stdout)
+}
+
+/// Extract the `xmrelay` binary from a tar.gz archive in memory.
+fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let gz = flate2::read::GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(gz);
+    for entry in tar.entries().map_err(|e| format!("corrupt archive: {e}"))? {
+        let mut entry = entry.map_err(|e| format!("corrupt archive: {e}"))?;
+        let is_file = entry.header().entry_type().is_file();
+        if is_file
+            && entry
+                .path()
+                .map_err(|e| format!("corrupt archive: {e}"))?
+                .file_name()
+                == Some(std::ffi::OsStr::new("xmrelay"))
+        {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("archive read failed: {e}"))?;
+            return Ok(buf);
+        }
+    }
+    Err("archive does not contain an `xmrelay` binary".into())
+}
+
+fn update_cmd(version: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate current binary: {e}"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "binary has no parent directory".to_string())?
+        .to_path_buf();
     println!(
         "Updating xm-relay in {} (target version: {})...",
         exe_dir.display(),
         version
     );
-    let url = "https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh";
-    let script = std::process::Command::new("curl")
-        .args(["-fsSL", url])
-        .output()
-        .map_err(|e| format!("failed to run 'curl': {e}"))?;
-    if !script.status.success() {
-        return Err(format!("failed to download installer from {url}"));
-    }
 
-    let mut child = std::process::Command::new("sh")
-        .env("XM_RELAY_INSTALL_DIR", &exe_dir)
-        .env("XM_RELAY_VERSION", version)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to spawn 'sh': {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin
-            .write_all(&script.stdout)
-            .map_err(|e| format!("failed to pipe installer script: {e}"))?;
+    // Download the pinned release artifact and verify its published SHA-256
+    // in-process. No remote script is ever executed.
+    let archive = curl_bytes(&release_asset_url(version, ".tar.gz"))?;
+    let sums = curl_bytes(&release_asset_url(version, ".tar.gz.sha256"))?;
+    let expected = String::from_utf8_lossy(&sums)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    if expected.len() != 64 {
+        return Err("checksum file has no SHA-256 line".into());
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("failed waiting for installer: {e}"))?;
-    if !status.success() {
-        return Err("installer exited with a non-zero status".into());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&archive);
+    let actual: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if actual != expected {
+        return Err(format!(
+            "SHA-256 mismatch: expected {expected}, got {actual}"
+        ));
     }
+    println!("SHA-256 checksum verified ({actual})");
+
+    let new_bytes = extract_binary(&archive)?;
+    let new_path = exe_dir.join(".xmrelay.new");
+    let bak_path = exe_dir.join(".xmrelay.bak");
+    std::fs::write(&new_path, &new_bytes)
+        .map_err(|e| format!("cannot write staged binary: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("cannot set permissions: {e}"))?;
+    }
+    let runs = std::process::Command::new(&new_path)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !runs {
+        let _ = std::fs::remove_file(&new_path);
+        return Err("staged binary failed to run; aborting update".into());
+    }
+    if exe.exists() {
+        std::fs::copy(&exe, &bak_path)
+            .map_err(|e| format!("cannot back up current binary: {e}"))?;
+    }
+    std::fs::rename(&new_path, &exe).map_err(|e| {
+        let _ = std::fs::copy(&bak_path, &exe); // best-effort rollback
+        format!("cannot replace binary: {e}")
+    })?;
+    println!(
+        "Updated xm-relay at {} (backup kept at {}).",
+        exe.display(),
+        bak_path.display()
+    );
     Ok(())
 }
 
 fn interactive_main() -> Result<ExitCode, String> {
+    interactive::install_panic_hook();
     let main_items = vec![
         "Hand Off a Session / Create Handoff".to_string(),
         "Previous Handoff History".to_string(),
@@ -1170,7 +1375,7 @@ fn main() -> ExitCode {
         };
     };
     let result = match command {
-        Command::Agents => agents(),
+        Command::Agents { json } => agents(json),
         Command::Update { version } => update_cmd(&version),
         Command::Checkpoint { command } => checkpoint_cmd(command),
         Command::Handoff { command } => {
@@ -1231,8 +1436,9 @@ fn main() -> ExitCode {
                     global,
                     project,
                     limit,
+                    json,
                 },
-        } => list(agent, global, project, limit),
+        } => list(agent, global, project, limit, json),
         Command::Sessions {
             command:
                 SessionsCommand::Search {
@@ -1255,9 +1461,59 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e == interactive::CTRL_C => ExitCode::from(130),
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_and_failed_map_to_exit_2() {
+        assert_eq!(preflight_exit(&ho::PreflightStatus::Blocked), 2);
+        assert_eq!(preflight_exit(&ho::PreflightStatus::Failed), 2);
+        assert_eq!(preflight_exit(&ho::PreflightStatus::Passed), 0);
+        assert_eq!(preflight_exit(&ho::PreflightStatus::PassedWithWarnings), 0);
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn tgz(member: &str, body: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::none());
+        let mut tar = tar::Builder::new(enc);
+        let mut h = tar::Header::new_gnu();
+        h.set_size(body.len() as u64);
+        h.set_mode(0o755);
+        h.set_cksum();
+        tar.append_data(&mut h, member, body).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn extracts_xmrelay_from_archive_root_and_prefix() {
+        for member in ["xmrelay", "pkg/xmrelay"] {
+            let bytes = tgz(member, b"binary");
+            assert_eq!(extract_binary(&bytes).unwrap(), b"binary");
+        }
+        let empty = tgz("other.txt", b"nope");
+        assert!(extract_binary(&empty).is_err());
+    }
+
+    #[test]
+    fn release_targets_cover_all_ci_targets() {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(release_target().unwrap(), "x86_64-unknown-linux-gnu");
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(release_target().unwrap(), "aarch64-apple-darwin");
     }
 }

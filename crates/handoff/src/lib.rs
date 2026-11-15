@@ -19,10 +19,10 @@ use xm_relay_core::{
     SourceType, Task, TaskState, TaskStatus, ToolStatus, Verification,
 };
 use xm_relay_repository::{
-    discover_instructions, inspect, sha256_hex, tracked_patch, InstructionSet, RepoError,
-    RepositoryState,
+    discover_instructions, inspect, redact_free_text, sha256_hex, tracked_patch, InstructionSet,
+    RepoError, RepositoryState,
 };
-use xm_relay_security::{redact_text, sensitive_file, Finding, SensitiveFile};
+use xm_relay_security::{redact_bytes, redact_text, sensitive_file, SensitiveFile};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -195,18 +195,26 @@ fn millis_to_rfc3339(ms: i64) -> String {
     )
 }
 
-fn generate_id(store_dir: &Path, ms: i64) -> String {
-    let base = format!("handoff_{ms}_{}", std::process::id());
-    if !store_dir.join(&base).exists() {
-        return base;
-    }
-    for n in 1..1000 {
-        let cand = format!("{base}_{n}");
-        if !store_dir.join(&cand).exists() {
-            return cand;
+/// Reserve a unique package directory atomically: `fs::create_dir` fails on an
+/// existing directory, so racing processes can never share one id. Errors after
+/// `max` candidates instead of silently overwriting an older package.
+fn reserve_id(store_dir: &Path, base: String, max: usize) -> Result<String, HandoffError> {
+    for n in 0..max {
+        let cand = if n == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{n}")
+        };
+        match fs::create_dir(store_dir.join(&cand)) {
+            Ok(()) => return Ok(cand),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(HandoffError::Io(e.to_string())),
         }
     }
-    base
+    Err(HandoffError::Io(format!(
+        "could not reserve a unique package id under {} (tried {max} candidates)",
+        store_dir.display()
+    )))
 }
 
 fn io_err(e: impl fmt::Display) -> HandoffError {
@@ -284,10 +292,26 @@ fn resolve_file_in_root(root: &Path, raw: &str) -> ResolvedFile {
             in_workspace: false,
         }
     } else {
+        // Lexical containment check: a relative path with `..` segments may
+        // join outside the root; such claims are treated as outside-workspace
+        // instead of being verified at an escaped path.
+        let mut depth = 0usize;
+        let mut contained = true;
+        for c in p.components() {
+            match c {
+                std::path::Component::Normal(_) => depth += 1,
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir if depth > 0 => depth -= 1,
+                _ => contained = false,
+            }
+            if !contained {
+                break;
+            }
+        }
         ResolvedFile {
             display_path: raw.to_string(),
             full_path: root.join(p),
-            in_workspace: true,
+            in_workspace: contained,
         }
     }
 }
@@ -801,6 +825,31 @@ fn render_context_md(
     out
 }
 
+/// Marker written in place of a JSON value that cannot survive redaction.
+const REDACTED_JSON: &str = "[REDACTED]";
+
+/// Redact a JSON-valued field in place. Fail closed: when redaction breaks the
+/// JSON round-trip, the whole value is replaced with `REDACTED_JSON` instead of
+/// keeping the original (secret-bearing) value. Returns the number of findings.
+fn redact_json_field(slot: &mut Option<serde_json::Value>) -> usize {
+    let Some(v) = slot.as_ref() else {
+        return 0;
+    };
+    let Ok(raw) = serde_json::to_string(v) else {
+        *slot = Some(serde_json::Value::String(REDACTED_JSON.into()));
+        return 0;
+    };
+    let (clean, findings) = redact_text(&raw);
+    if findings.is_empty() {
+        return 0;
+    }
+    match serde_json::from_str::<serde_json::Value>(&clean) {
+        Ok(v) => *slot = Some(v),
+        Err(_) => *slot = Some(serde_json::Value::String(REDACTED_JSON.into())),
+    }
+    findings.len()
+}
+
 fn redact_session(mut s: Session) -> (Session, usize) {
     let mut count = 0;
     for ev in &mut s.events {
@@ -809,23 +858,14 @@ fn redact_session(mut s: Session) -> (Session, usize) {
             count += f.len();
             ev.content.text = Some(clean);
         }
+        count += redact_json_field(&mut ev.content.structured);
         if let Some(tool) = &mut ev.tool {
             if let Some(out) = &tool.output {
                 let (clean, f) = redact_text(out);
                 count += f.len();
                 tool.output = Some(clean);
             }
-            if let Some(inp) = &tool.input {
-                if let Ok(raw) = serde_json::to_string(inp) {
-                    let (clean, f) = redact_text(&raw);
-                    if !f.is_empty() {
-                        count += f.len();
-                        if let Ok(v) = serde_json::from_str(&clean) {
-                            tool.input = Some(v);
-                        }
-                    }
-                }
-            }
+            count += redact_json_field(&mut tool.input);
         }
     }
     (s, count)
@@ -843,7 +883,8 @@ pub fn create_handoff(
         .or_else(|| session.project.as_ref().map(|p| PathBuf::from(&p.root)))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let repo_state = inspect(&inferred_root)?;
+    let mut repo_state = inspect(&inferred_root)?;
+    let repo_redactions = redact_free_text(&mut repo_state);
     let root_path = repo_state
         .root
         .as_ref()
@@ -855,13 +896,17 @@ pub fn create_handoff(
     let ext = extract_from_session(session, &root_path, &repo_state);
 
     let mut redactions_count = 0usize;
-    let raw_patch = if repo_state.is_repository {
+    redactions_count += repo_redactions;
+    let mut raw_patch = if repo_state.is_repository {
         tracked_patch(&root_path)?
     } else {
         Vec::new()
     };
-    let (redacted_patch, patch_findings): (String, Vec<Finding>) =
-        redact_text(&String::from_utf8_lossy(&raw_patch));
+    let patch_truncated = raw_patch.len() > xm_relay_repository::MAX_PATCH_BYTES;
+    if patch_truncated {
+        raw_patch.truncate(xm_relay_repository::MAX_PATCH_BYTES);
+    }
+    let (redacted_patch, patch_findings) = redact_bytes(&raw_patch);
     redactions_count += patch_findings.len();
 
     for f in &mut instructions.files {
@@ -893,6 +938,12 @@ pub fn create_handoff(
         names.into_iter().filter_map(sensitive_file).collect();
 
     let mut warnings = repo_state.warnings.clone();
+    if patch_truncated {
+        warnings.push(format!(
+            "working-tree.patch truncated at {} MiB",
+            xm_relay_repository::MAX_PATCH_BYTES / (1024 * 1024)
+        ));
+    }
     warnings.extend(instructions.warnings.clone());
     if redactions_count > 0 {
         warnings.push(format!(
@@ -936,9 +987,12 @@ pub fn create_handoff(
 
     fs::create_dir_all(store_dir).map_err(io_err)?;
     let ms = now_millis();
-    let hid = generate_id(store_dir, ms);
+    let hid = reserve_id(
+        store_dir,
+        format!("handoff_{ms}_{}", std::process::id()),
+        1000,
+    )?;
     let pkg_dir = store_dir.join(&hid);
-    fs::create_dir_all(&pkg_dir).map_err(io_err)?;
 
     let mut manifest = HandoffManifest {
         schema_version: SCHEMA_VERSION.into(),
@@ -1004,7 +1058,7 @@ pub fn create_handoff(
     write_pkg_file(
         &pkg_dir,
         "patches/working-tree.patch",
-        redacted_patch.as_bytes(),
+        &redacted_patch,
         &mut files,
     )?;
 
@@ -1115,6 +1169,7 @@ pub fn validate_handoff(
     let context_md = fs::read_to_string(dir.join("context.md")).map_err(io_err)?;
 
     let mut checksum_errors = Vec::new();
+    let mut verified = BTreeSet::new();
     match fs::read_to_string(dir.join("checksums.txt")) {
         Ok(txt) => {
             for line in txt.lines().filter(|l| !l.trim().is_empty()) {
@@ -1128,7 +1183,9 @@ pub fn validate_handoff(
                 }
                 match fs::read(dir.join(rel)) {
                     Ok(bytes) => {
-                        if sha256_hex(&bytes) != expected {
+                        if sha256_hex(&bytes) == expected {
+                            verified.insert(rel.to_string());
+                        } else {
                             checksum_errors.push(format!("checksum mismatch for {rel}"));
                         }
                     }
@@ -1137,6 +1194,16 @@ pub fn validate_handoff(
             }
         }
         Err(e) => checksum_errors.push(format!("cannot read checksums.txt: {e}")),
+    }
+    // Reverse check: every package artifact (and the manifest itself) must have
+    // a matching verified line in checksums.txt. Deleting a line from
+    // checksums.txt must never hide tampering of the file it described.
+    let mut expected = BTreeSet::from(["manifest.json".to_string()]);
+    for f in &manifest.files {
+        expected.insert(f.path.clone());
+    }
+    for rel in expected.difference(&verified) {
+        checksum_errors.push(format!("artifact not covered by checksums.txt: {rel}"));
     }
     let checksums_valid = checksum_errors.is_empty();
 
@@ -1298,6 +1365,18 @@ pub fn export_handoff(
     }
     let src_dir = store_dir.join(id);
     let out_dir = dest_dir.join(id);
+    // Refuse when the destination resolves to the source package itself
+    // (e.g. dest_dir == store_dir or a symlinked alias): deleting it first
+    // would destroy the package.
+    if fs::canonicalize(&out_dir)
+        .ok()
+        .zip(fs::canonicalize(&src_dir).ok())
+        .is_some_and(|(a, b)| a == b)
+    {
+        return Err(HandoffError::Io(
+            "destination resolves to the source package; refusing to overwrite".into(),
+        ));
+    }
     if out_dir.exists() {
         if !overwrite {
             return Err(HandoffError::Io(format!(
@@ -1324,4 +1403,38 @@ pub fn export_handoff(
     fs::copy(src_dir.join("manifest.json"), out_dir.join("manifest.json")).map_err(io_err)?;
     fs::copy(src_dir.join("checksums.txt"), out_dir.join("checksums.txt")).map_err(io_err)?;
     Ok(out_dir)
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn redacts_json_and_fails_closed_when_roundtrip_breaks() {
+        // Normal path: secret inside a JSON value is redacted, JSON stays valid.
+        let mut slot = Some(serde_json::json!({
+            "cmd": "export AKIAABCDEFGHIJKLMNOP",
+            "safe": "text"
+        }));
+        let n = redact_json_field(&mut slot);
+        assert_eq!(n, 1);
+        let v = slot.as_ref().unwrap();
+        assert_eq!(v["safe"], "text");
+        assert_eq!(v["cmd"], "export [REDACTED:aws_access_key]");
+
+        // Fail-closed path: a truncated private key reaches `\z`, swallowing the
+        // JSON tail; the round-trip breaks so the whole value becomes a marker.
+        let mut broken = Some(serde_json::json!(["-----BEGIN PRIVATE KEY----- truncated"]));
+        let n2 = redact_json_field(&mut broken);
+        assert_eq!(n2, 1);
+        assert_eq!(
+            broken.as_ref().unwrap(),
+            &serde_json::Value::String("[REDACTED]".into())
+        );
+
+        // No findings -> untouched.
+        let mut clean = Some(serde_json::json!({"a": 1}));
+        assert_eq!(redact_json_field(&mut clean), 0);
+        assert_eq!(clean.as_ref().unwrap(), &serde_json::json!({"a": 1}));
+    }
 }

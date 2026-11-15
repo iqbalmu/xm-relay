@@ -1,6 +1,38 @@
 use std::path::PathBuf;
 use xm_relay_adapter_omp::OmpAdapter;
-use xm_relay_core::{AgentAdapter, EventKind, SessionFilter, ToolStatus};
+use xm_relay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
+
+#[test]
+fn user_message_without_text_payload_is_lossy() {
+    let dir = std::env::temp_dir().join(format!("xmr-omp-drift-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sub = dir.join("-work-demo");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(
+        sub.join("2023-11-14T22-00-00-000Z_dddd3333-0000-0000-0000-000000000004.jsonl"),
+        "{\"type\":\"session\",\"version\":3,\"id\":\"dddd3333-0000-0000-0000-000000000004\",\"timestamp\":\"2023-11-14T22:00:00.000Z\",\"cwd\":\"/work/drift\"}\n\
+         {\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2023-11-14T22:00:01.000Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\"}]}}\n",
+    )
+    .unwrap();
+
+    let a = OmpAdapter::new(dir.clone());
+    let s = a
+        .read_session("dddd3333-0000-0000-0000-000000000004")
+        .unwrap();
+    assert!(
+        s.parse_report.is_lossy(),
+        "schema drift must mark the report lossy"
+    );
+    let ev = s
+        .events
+        .iter()
+        .find(|e| e.parse_status == ParseStatus::Partial)
+        .expect("drifted user message should be Partial");
+    assert_eq!(ev.kind, EventKind::UserMessage);
+    assert!(ev.content.text.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 fn adapter() -> OmpAdapter {
     OmpAdapter::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/omp"))

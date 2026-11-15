@@ -7,7 +7,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +18,8 @@ pub enum SecretKind {
     GoogleApiKey,
     StripeKey,
     ApiKey,
+    /// `Authorization: Bearer ...` header token.
+    BearerToken,
     Jwt,
     PrivateKey,
     UrlCredentials,
@@ -34,6 +36,7 @@ impl SecretKind {
             Self::GoogleApiKey => "google_api_key",
             Self::StripeKey => "stripe_key",
             Self::ApiKey => "api_key",
+            Self::BearerToken => "bearer_token",
             Self::Jwt => "jwt",
             Self::PrivateKey => "private_key",
             Self::UrlCredentials => "url_credentials",
@@ -60,25 +63,48 @@ struct Rule {
     re: Regex,
     /// Capture group holding the secret (0 = whole match).
     group: usize,
+    /// The `regex` crate has no look-around; rules needing "value must contain
+    /// a digit" set this instead of encoding it in the pattern.
+    require_digit: bool,
 }
 
 fn rules() -> &'static [Rule] {
     static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
     RULES.get_or_init(|| {
-        let r = |kind, pat: &str, group| Rule { kind, re: Regex::new(pat).expect("valid regex"), group };
+        let r = |kind, pat: &str, group| Rule {
+            kind,
+            re: Regex::new(pat).expect("valid regex"),
+            group,
+            require_digit: false,
+        };
         vec![
-            r(SecretKind::PrivateKey, r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\z)", 0),
+            // Full PEM blocks only: END-anchored so the lazy body never scans
+            // past a key. Truncated BEGIN headers are handled by a separate
+            // bounded orphan pass in `scan_text` (a bounded `{0,N}` body here
+            // would exceed the regex crate's compiled-size limit).
+            r(SecretKind::PrivateKey, r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----", 0),
             r(SecretKind::AwsAccessKey, r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", 0),
             r(SecretKind::GithubToken, r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b", 0),
             r(SecretKind::SlackToken, r"\bxox[baprs]-[A-Za-z0-9-]{10,}", 0),
             r(SecretKind::GoogleApiKey, r"\bAIza[0-9A-Za-z_-]{35}\b", 0),
             r(SecretKind::StripeKey, r"\b[sr]k_live_[0-9a-zA-Z]{24,}\b", 0),
-            r(SecretKind::ApiKey, r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", 0),
+            // Vendor-prefixed forms are distinctive enough on their own; the
+            // bare `sk-` form additionally requires a digit (checked without
+            // look-around, which the regex crate does not support) so code
+            // identifiers like `sk-my_function_with_a_long_name` don't match.
+            r(SecretKind::ApiKey, r"\bsk-(?:ant-|proj-)[A-Za-z0-9_-]{20,}", 0),
+            Rule {
+                kind: SecretKind::ApiKey,
+                re: Regex::new(r"\bsk-[A-Za-z0-9_-]{20,}").expect("valid regex"),
+                group: 0,
+                require_digit: true,
+            },
             r(SecretKind::Jwt, r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", 0),
+            r(SecretKind::BearerToken, r#"(?i)\b(?:authorization|proxy-authorization)\b["']?\s*[:=]\s*(?:bearer\s+)?([A-Za-z0-9._+/=-]{20,})"#, 1),
             r(SecretKind::UrlCredentials, r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:([^\s:/@]{3,})@", 1),
             r(
                 SecretKind::GenericAssignment,
-                r#"(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|passwd|password|client[_-]?secret)\b["']?\s*[:=]\s*["']?([A-Za-z0-9/+_\-=.]{16,})"#,
+                r#"(?i)\b(?:api[_-]?key|aws[_-]?secret(?:[_-]?access)?[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|passwd|password|client[_-]?secret)\b["']?\s*[:=]\s*["']?([A-Za-z0-9/+_\-=.]{16,})"#,
                 1,
             ),
         ]
@@ -126,6 +152,15 @@ fn line_of(text: &str, offset: usize) -> usize {
         + 1
 }
 
+/// Maximum bytes redacted after a truncated `BEGIN PRIVATE KEY` header.
+const MAX_ORPHAN_KEY_BYTES: usize = 16 * 1024;
+
+/// `BEGIN PRIVATE KEY` header with no repetition inside the pattern, so the
+/// compiled program stays small. Used to catch truncated blocks.
+static ORPHAN_KEY_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----").expect("valid regex")
+});
+
 /// Find secrets in `text`. Overlapping matches keep the earliest/longest one.
 pub fn scan_text(text: &str) -> Vec<Finding> {
     let mut found: Vec<Finding> = Vec::new();
@@ -134,6 +169,9 @@ pub fn scan_text(text: &str) -> Vec<Finding> {
             let Some(m) = caps.get(rule.group) else {
                 continue;
             };
+            if rule.require_digit && !m.as_str().bytes().any(|b| b.is_ascii_digit()) {
+                continue;
+            }
             if rule.kind == SecretKind::GenericAssignment && looks_like_placeholder(m.as_str()) {
                 continue;
             }
@@ -149,6 +187,28 @@ pub fn scan_text(text: &str) -> Vec<Finding> {
             });
         }
     }
+    // Orphan pass: a BEGIN header with no END marker (truncated tool output)
+    // never matches the END-anchored rule; fail safe by redacting a bounded
+    // window after it instead of the whole remaining text.
+    let covered = |start: usize, end: usize| {
+        found
+            .iter()
+            .any(|f| f.kind == SecretKind::PrivateKey && start < f.end && end > f.start)
+    };
+    let mut orphans: Vec<Finding> = Vec::new();
+    for m in ORPHAN_KEY_HEADER.find_iter(text) {
+        let end = (m.start() + MAX_ORPHAN_KEY_BYTES).min(text.len());
+        if !covered(m.start(), end) {
+            orphans.push(Finding {
+                kind: SecretKind::PrivateKey,
+                line: line_of(text, m.start()),
+                start: m.start(),
+                end,
+                fingerprint: fingerprint(&text[m.start()..end]),
+            });
+        }
+    }
+    found.extend(orphans);
     found.sort_by_key(|f| (f.start, std::cmp::Reverse(f.end)));
     let mut out: Vec<Finding> = Vec::new();
     for f in found {
@@ -158,6 +218,40 @@ pub fn scan_text(text: &str) -> Vec<Finding> {
         out.push(f);
     }
     out
+}
+
+/// Redact a unified diff while preserving non-UTF-8 bytes. UTF-8 lines are
+/// scanned and redacted normally; lines with invalid UTF-8 are scanned through
+/// their lossy form and only rewritten when a finding lands on them, so a clean
+/// non-UTF-8 diff stays byte-exact (and `git apply`-able).
+pub fn redact_bytes(patch: &[u8]) -> (Vec<u8>, Vec<Finding>) {
+    let mut out = Vec::with_capacity(patch.len());
+    let mut findings = Vec::new();
+    for line in patch.split_inclusive(|&b| b == b'\n') {
+        match std::str::from_utf8(line) {
+            Ok(s) => {
+                let found = scan_text(s);
+                if found.is_empty() {
+                    out.extend_from_slice(line);
+                } else {
+                    let (clean, f) = redact_text(s);
+                    findings.extend(f);
+                    out.extend_from_slice(clean.as_bytes());
+                }
+            }
+            Err(_) => {
+                let lossy = String::from_utf8_lossy(line);
+                let (clean, f) = redact_text(&lossy);
+                if f.is_empty() {
+                    out.extend_from_slice(line); // byte-exact, no findings
+                } else {
+                    findings.extend(f);
+                    out.extend_from_slice(clean.as_bytes());
+                }
+            }
+        }
+    }
+    (out, findings)
 }
 
 /// Replace every finding with `[REDACTED:<kind>]`. Returns the new text and the
@@ -189,6 +283,9 @@ pub fn scan_patch(patch: &str) -> Vec<DiffFinding> {
     let mut out = Vec::new();
     for line in patch.lines() {
         if let Some(p) = line.strip_prefix("+++ ") {
+            // `+++ b/path` from git, or `+++ b/path<TAB>timestamp` from GNU
+            // diff -p: metadata after the first tab is not part of the name.
+            let p = p.split('\t').next().unwrap_or(p);
             path = p.strip_prefix("b/").unwrap_or(p).to_string();
         } else if let Some(added) = line.strip_prefix('+') {
             for f in scan_text(added) {
@@ -210,36 +307,44 @@ pub struct SensitiveFile {
 
 /// Flag files that commonly hold secrets, by name only (content is not read).
 pub fn sensitive_file(path: &str) -> Option<SensitiveFile> {
-    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    let reason = if name == ".env" || (name.starts_with(".env.") && !is_template(&name)) {
-        "environment file"
-    } else if matches!(
-        name.as_str(),
-        "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519"
-    ) {
-        "ssh private key"
-    } else if [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]
-        .iter()
-        .any(|e| name.ends_with(e))
-    {
-        "key or certificate store"
-    } else if matches!(
-        name.as_str(),
-        ".netrc"
-            | ".pgpass"
-            | ".npmrc"
-            | ".pypirc"
-            | "credentials"
-            | "credentials.json"
-            | "secrets.json"
-            | "service-account.json"
-    ) {
-        "credentials file"
-    } else if name.starts_with("secrets.") || name.starts_with("secret.") {
-        "secrets file"
-    } else {
-        return None;
-    };
+    // Normalize Windows-style separators before extracting the file name.
+    let normalized = path.replace('\\', "/");
+    let name = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(&normalized)
+        .to_ascii_lowercase();
+    let reason =
+        if name == ".env" || name == ".envrc" || (name.starts_with(".env.") && !is_template(&name))
+        {
+            "environment file"
+        } else if matches!(
+            name.as_str(),
+            "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519" | "id_ed25519_sk"
+        ) {
+            "ssh private key"
+        } else if [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]
+            .iter()
+            .any(|e| name.ends_with(e))
+        {
+            "key or certificate store"
+        } else if matches!(
+            name.as_str(),
+            ".netrc"
+                | ".pgpass"
+                | ".npmrc"
+                | ".pypirc"
+                | "credentials"
+                | "credentials.json"
+                | "secrets.json"
+                | "service-account.json"
+        ) {
+            "credentials file"
+        } else if name.starts_with("secrets.") || name.starts_with("secret.") {
+            "secrets file"
+        } else {
+            return None;
+        };
     Some(SensitiveFile {
         path: path.into(),
         reason: reason.to_string(),
@@ -414,5 +519,64 @@ mod tests {
         ] {
             assert!(sensitive_file(p).is_none(), "{p}");
         }
+    }
+
+    #[test]
+    fn detects_bearer_aws_secret_envrc_and_rejects_code_identifiers() {
+        let text = format!(
+            "Authorization: Bearer {}\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREALKEY123\n",
+            "abcDEF123456ghiJKLmnoPQR789"
+        );
+        let found: Vec<SecretKind> = scan_text(&text).into_iter().map(|f| f.kind).collect();
+        assert!(found.contains(&SecretKind::BearerToken));
+        assert!(found.contains(&SecretKind::GenericAssignment));
+
+        // Bare `sk-` identifiers without a digit are ordinary code, not keys.
+        assert!(scan_text("let x = sk-my_function_with_a_long_name;\n").is_empty());
+        // Prefixed vendor keys without a digit still match.
+        assert_eq!(
+            kinds(&format!("sk-ant-{}", "abcdefghijklmnopqrstuvwxyz")),
+            [SecretKind::ApiKey]
+        );
+
+        assert!(sensitive_file(".envrc").is_some());
+        assert!(sensitive_file("dir\\.env.local").is_some());
+        assert!(sensitive_file("notes.txt").is_none());
+    }
+
+    #[test]
+    fn truncated_private_key_header_cannot_swallow_distant_text() {
+        let filler = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\nTAIL_MARKER xoxb-abcdefghijklmnop\n",
+            "A".repeat(40_000)
+        );
+        // The orphan header is redacted only up to the 16 KiB bound...
+        let findings = scan_text(&filler);
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|f| f.kind == SecretKind::PrivateKey)
+                .count(),
+            1
+        );
+        // ...so secrets after the bound are still found and the tail survives.
+        assert!(findings.iter().any(|f| f.kind == SecretKind::SlackToken));
+        let (out, _) = redact_text(&filler);
+        assert!(out.contains("TAIL_MARKER"));
+
+        // A truncated header within the bound still fails safe: redacted to end.
+        let short = "-----BEGIN PRIVATE KEY-----\nMIIabc\ndef";
+        let (out2, f2) = redact_text(short);
+        assert_eq!(f2.len(), 1);
+        assert!(out2.contains("[REDACTED:private_key]"));
+        assert!(!out2.contains("MIIabc"));
+
+        // A complete PEM block still matches as one finding.
+        let full =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\ndef\n-----END RSA PRIVATE KEY-----\nafter";
+        let (out3, f3) = redact_text(full);
+        assert_eq!(f3.len(), 1);
+        assert!(out3.contains("after"));
+        assert!(!out3.contains("MIIabc"));
     }
 }

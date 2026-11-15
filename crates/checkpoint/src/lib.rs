@@ -4,7 +4,7 @@
 //! detected secrets before writing to disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use xm_relay_repository::{
     discover_instructions, inspect, sha256_hex, tracked_patch, InstructionSet, RepoError,
     RepositoryState,
 };
-use xm_relay_security::{redact_text, sensitive_file, Finding, SensitiveFile};
+use xm_relay_security::{redact_bytes, redact_text, sensitive_file, Finding, SensitiveFile};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -93,6 +93,10 @@ pub struct WorkspaceDrift {
     pub untracked_added: Vec<String>,
     pub untracked_removed: Vec<String>,
     pub untracked_modified: Vec<String>,
+    /// Untracked files whose content could not be verified (not hashed on both
+    /// sides, e.g. over the size cap). Listed separately instead of silently
+    /// counting as unchanged.
+    pub untracked_unverified: Vec<String>,
 }
 
 /// Default storage location: `$XDG_DATA_HOME/xm-relay/checkpoints` or `~/.local/share/xm-relay/checkpoints`.
@@ -137,18 +141,24 @@ fn millis_to_rfc3339(ms: i64) -> String {
     )
 }
 
-fn generate_id(store_dir: &Path, ms: i64) -> String {
-    let base = format!("ckpt_{ms}_{}", std::process::id());
-    if !store_dir.join(&base).exists() {
-        return base;
-    }
-    for n in 1..1000 {
-        let cand = format!("{base}_{n}");
-        if !store_dir.join(&cand).exists() {
-            return cand;
+/// Reserve a unique checkpoint directory atomically; see `handoff::reserve_id`.
+fn reserve_id(store_dir: &Path, base: String, max: usize) -> Result<String, CheckpointError> {
+    for n in 0..max {
+        let cand = if n == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{n}")
+        };
+        match fs::create_dir(store_dir.join(&cand)) {
+            Ok(()) => return Ok(cand),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(CheckpointError::Io(e.to_string())),
         }
     }
-    base
+    Err(CheckpointError::Io(format!(
+        "could not reserve a unique checkpoint id under {} (tried {max} candidates)",
+        store_dir.display()
+    )))
 }
 
 fn io_err(e: impl fmt::Display) -> CheckpointError {
@@ -176,22 +186,38 @@ pub fn create_checkpoint(
     project_path: &Path,
     store_dir: &Path,
 ) -> Result<CheckpointManifest, CheckpointError> {
-    let repo_state = inspect(project_path)?;
+    let mut repo_state = inspect(project_path)?;
     if !repo_state.is_repository {
         return Err(CheckpointError::NotARepository(
             project_path.display().to_string(),
         ));
     }
+    let repo_redactions = xm_relay_repository::redact_free_text(&mut repo_state);
     let root_str = repo_state.root.clone().unwrap_or_default();
     let root = PathBuf::from(&root_str);
 
     let mut instructions = discover_instructions(&root);
-    let mut warnings = repo_state.warnings.clone();
-    warnings.extend(instructions.warnings.clone());
 
-    let raw_patch = tracked_patch(&root)?;
-    let patch_str = String::from_utf8_lossy(&raw_patch);
-    let (redacted_patch, patch_redactions) = redact_text(&patch_str);
+    let mut raw_patch = tracked_patch(&root)?;
+    let patch_truncated = raw_patch.len() > xm_relay_repository::MAX_PATCH_BYTES;
+    if patch_truncated {
+        raw_patch.truncate(xm_relay_repository::MAX_PATCH_BYTES);
+    }
+    let (redacted_patch, patch_redactions) = redact_bytes(&raw_patch);
+
+    let mut warnings = repo_state.warnings.clone();
+    if patch_truncated {
+        warnings.push(format!(
+            "working-tree.patch truncated at {} MiB",
+            xm_relay_repository::MAX_PATCH_BYTES / (1024 * 1024)
+        ));
+    }
+    warnings.extend(instructions.warnings.clone());
+    if repo_redactions > 0 {
+        warnings.push(format!(
+            "redacted {repo_redactions} potential secret(s) from repository state"
+        ));
+    }
     if !patch_redactions.is_empty() {
         warnings.push(format!(
             "redacted {} potential secret(s) from working-tree.patch",
@@ -238,9 +264,8 @@ pub fn create_checkpoint(
 
     fs::create_dir_all(store_dir).map_err(io_err)?;
     let ms = now_millis();
-    let id = generate_id(store_dir, ms);
+    let id = reserve_id(store_dir, format!("ckpt_{ms}_{}", std::process::id()), 1000)?;
     let ckpt_dir = store_dir.join(&id);
-    fs::create_dir_all(&ckpt_dir).map_err(io_err)?;
 
     let mut artifacts = Vec::new();
     let repo_json = serde_json::to_vec_pretty(&repo_state).map_err(io_err)?;
@@ -257,7 +282,7 @@ pub fn create_checkpoint(
     write_artifact(
         &ckpt_dir,
         "working-tree.patch",
-        redacted_patch.as_bytes(),
+        &redacted_patch,
         &mut artifacts,
     )?;
 
@@ -345,6 +370,7 @@ pub fn inspect_checkpoint(store_dir: &Path, id: &str) -> Result<CheckpointDetail
             .map_err(io_err)?;
 
     let mut errors = Vec::new();
+    let mut verified = BTreeSet::new();
     match fs::read_to_string(dir.join("checksums.txt")) {
         Ok(txt) => {
             for line in txt.lines().filter(|l| !l.trim().is_empty()) {
@@ -359,7 +385,9 @@ pub fn inspect_checkpoint(store_dir: &Path, id: &str) -> Result<CheckpointDetail
                 match fs::read(dir.join(rel)) {
                     Ok(bytes) => {
                         let actual = sha256_hex(&bytes);
-                        if actual != expected {
+                        if actual == expected {
+                            verified.insert(rel.to_string());
+                        } else {
                             errors.push(format!("checksum mismatch for {rel}"));
                         }
                     }
@@ -368,6 +396,15 @@ pub fn inspect_checkpoint(store_dir: &Path, id: &str) -> Result<CheckpointDetail
             }
         }
         Err(e) => errors.push(format!("cannot read checksums.txt: {e}")),
+    }
+    // Reverse check: every manifest artifact plus the manifest itself must have
+    // a matching verified line, so trimming checksums.txt cannot hide tampering.
+    let mut expected = BTreeSet::from(["manifest.json".to_string()]);
+    for a in &manifest.artifacts {
+        expected.insert(a.path.clone());
+    }
+    for rel in expected.difference(&verified) {
+        errors.push(format!("artifact not covered by checksums.txt: {rel}"));
     }
 
     Ok(CheckpointDetail {
@@ -410,8 +447,8 @@ pub fn compare_with_workspace(
     });
 
     let live_raw_patch = tracked_patch(&root)?;
-    let (live_redacted, _) = redact_text(&String::from_utf8_lossy(&live_raw_patch));
-    let live_patch_sha = sha256_hex(live_redacted.as_bytes());
+    let (live_redacted, _) = redact_bytes(&live_raw_patch);
+    let live_patch_sha = sha256_hex(&live_redacted);
     let ckpt_patch_sha = detail
         .manifest
         .artifacts
@@ -436,12 +473,17 @@ pub fn compare_with_workspace(
     let mut untracked_added = Vec::new();
     let mut untracked_removed = Vec::new();
     let mut untracked_modified = Vec::new();
+    let mut untracked_unverified = Vec::new();
 
     for (p, new_h) in &new_un {
         match old_un.get(p) {
             None => untracked_added.push((*p).to_string()),
             Some(old_h) if old_h != new_h => untracked_modified.push((*p).to_string()),
-            _ => {}
+            // Both sides unhashed (over cap or unreadable): content could
+            // differ at the same size, so report unverified instead of
+            // silently counting the file as unchanged.
+            Some(None) => untracked_unverified.push((*p).to_string()),
+            Some(Some(_)) => {}
         }
     }
     for p in old_un.keys() {
@@ -455,7 +497,8 @@ pub fn compare_with_workspace(
         && !patch_sha256_changed
         && untracked_added.is_empty()
         && untracked_removed.is_empty()
-        && untracked_modified.is_empty();
+        && untracked_modified.is_empty()
+        && untracked_unverified.is_empty();
 
     Ok(WorkspaceDrift {
         checkpoint_id: id.into(),
@@ -466,5 +509,6 @@ pub fn compare_with_workspace(
         untracked_added,
         untracked_removed,
         untracked_modified,
+        untracked_unverified,
     })
 }

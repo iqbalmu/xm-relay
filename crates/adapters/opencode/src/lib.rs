@@ -118,12 +118,14 @@ impl AgentAdapter for OpenCodeAdapter {
             .map_err(src_err)?;
         let mut out = Vec::new();
         for row in rows {
-            let s = row.map_err(src_err)?;
-            if filter
-                .project_root
-                .as_ref()
-                .is_some_and(|p| s.project_root.as_ref() != Some(p))
-            {
+            let s = match row {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("xm-relay: warning: skipping unreadable opencode session row: {e}");
+                    continue;
+                }
+            };
+            if !filter.matches_project(s.project_root.as_deref()) {
                 continue;
             }
             out.push(s);
@@ -276,10 +278,21 @@ impl Builder {
                 let attachments = v.get("files").and_then(Value::as_array).map_or(0, Vec::len);
                 let structured =
                     (attachments > 0).then(|| json!({ "attachment_count": attachments }));
-                let content = EventContent {
-                    text: v["text"].as_str().map(String::from),
-                    structured,
+                let text = v["text"].as_str().map(String::from);
+                // Schema drift: a user message with no text payload and no
+                // attachments means the vendor likely renamed fields. Record it
+                // as lossy instead of silently exporting an empty message.
+                let parse_status = if text.is_none() && structured.is_none() {
+                    self.report.unsupported.push(UnsupportedEvent {
+                        position: seq,
+                        native_kind: Some("user".into()),
+                        reason: "user message carries no text payload (schema drift?)".into(),
+                    });
+                    ParseStatus::Partial
+                } else {
+                    ParseStatus::Parsed
                 };
+                let content = EventContent { text, structured };
                 self.push(
                     id,
                     ts,
@@ -288,7 +301,7 @@ impl Builder {
                     content,
                     None,
                     ToolStatus::Unknown,
-                    ParseStatus::Parsed,
+                    parse_status,
                 );
             }
             "assistant" => self.assistant(id, seq, ts, &v),

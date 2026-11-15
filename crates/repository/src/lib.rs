@@ -15,6 +15,9 @@ use std::process::Command;
 
 /// Untracked files above this size are listed but not hashed.
 const MAX_HASH_BYTES: u64 = 5 * 1024 * 1024;
+/// Working-tree patches above this size are truncated before redaction and
+/// packaging, so a repo with multi-GB binary churn cannot exhaust memory.
+pub const MAX_PATCH_BYTES: usize = 64 * 1024 * 1024;
 const RECENT_COMMITS: usize = 10;
 
 #[derive(Debug)]
@@ -35,6 +38,32 @@ impl fmt::Display for RepoError {
 }
 
 impl std::error::Error for RepoError {}
+
+/// Redact free-text fields of a repository state in place and return the number
+/// of redactions. Paths are untouched (they index git artifacts), but branch
+/// names, upstream refs, commit subjects, and warnings are user-controlled text
+/// that can carry pasted secrets.
+pub fn redact_free_text(state: &mut RepositoryState) -> usize {
+    let mut count = 0;
+    for slot in [&mut state.branch, &mut state.upstream] {
+        if let Some(s) = slot {
+            let (clean, f) = xm_relay_security::redact_text(s);
+            count += f.len();
+            *slot = Some(clean);
+        }
+    }
+    for c in &mut state.recent_commits {
+        let (clean, f) = xm_relay_security::redact_text(&c.subject);
+        count += f.len();
+        c.subject = clean;
+    }
+    for w in &mut state.warnings {
+        let (clean, f) = xm_relay_security::redact_text(w);
+        count += f.len();
+        *w = clean;
+    }
+    count
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedFile {
@@ -180,12 +209,7 @@ pub fn inspect(path: &Path) -> Result<RepositoryState, RepoError> {
     st.submodules = git_text(&root, &["submodule", "status"])
         .unwrap_or_default()
         .lines()
-        .filter(|l| l.len() > 42)
-        .map(|l| SubmoduleInfo {
-            state: l.chars().next().unwrap_or(' '),
-            commit: l[1..41].into(),
-            path: l[42..].split(" (").next().unwrap_or("").into(),
-        })
+        .filter_map(parse_submodule_line)
         .collect();
     st.worktrees =
         parse_worktrees(&git_text(&root, &["worktree", "list", "--porcelain"]).unwrap_or_default());
@@ -195,6 +219,32 @@ pub fn inspect(path: &Path) -> Result<RepositoryState, RepoError> {
 
 fn status_char(c: char) -> Option<char> {
     (c != '.').then_some(c)
+}
+
+/// Parse one `git submodule status` line: `<status><40-hex> <path>[ (desc)]`.
+/// Field-split instead of fixed byte offsets so a format tweak degrades to a
+/// skipped line instead of slicing garbage out of the middle.
+fn parse_submodule_line(l: &str) -> Option<SubmoduleInfo> {
+    let mut chars = l.chars();
+    let state = chars.next()?;
+    let rest = chars.as_str();
+    let mut it = rest.splitn(2, ' ');
+    let commit = it.next()?.to_string();
+    let mut path = it.next()?.to_string();
+    // Drop git's optional " (ref)" description suffix.
+    if let Some((p, _)) = path.split_once(" (") {
+        if !p.is_empty() {
+            path = p.to_string();
+        }
+    }
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) || path.is_empty() {
+        return None;
+    }
+    Some(SubmoduleInfo {
+        state,
+        commit,
+        path,
+    })
 }
 
 fn parse_status(root: &Path, st: &mut RepositoryState) -> Result<(), RepoError> {
@@ -276,7 +326,14 @@ fn parse_status(root: &Path, st: &mut RepositoryState) -> Result<(), RepoError> 
 }
 
 fn diff_summary(root: &Path, has_head: bool) -> Result<DiffSummary, RepoError> {
-    let mut args = vec!["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff"];
+    let mut args = vec![
+        "diff",
+        "--numstat",
+        "-z",
+        "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
+    ];
     if has_head {
         args.push("HEAD");
     } else {
@@ -346,6 +403,12 @@ fn hash_untracked(root: &Path, st: &mut RepositoryState) {
         if f.is_symlink {
             continue; // never follow symlinks (spec 16.3)
         }
+        if !meta.is_file() {
+            // FIFOs block on read until a writer appears; sockets error. Skip
+            // both so a stray pipe in the workspace cannot hang inspection.
+            warnings.push(format!("untracked special file not hashed: {}", f.path));
+            continue;
+        }
         if meta.len() > MAX_HASH_BYTES {
             warnings.push(format!(
                 "untracked file not hashed (over {MAX_HASH_BYTES} bytes): {}",
@@ -389,4 +452,30 @@ pub fn repo_root(path: &Path) -> Option<PathBuf> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod submodule_tests {
+    use super::*;
+
+    #[test]
+    fn parses_submodule_status_lines() {
+        let normal =
+            parse_submodule_line(" a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 sub/one (heads/main)")
+                .unwrap();
+        assert_eq!(normal.state, ' ');
+        assert_eq!(normal.commit, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0");
+        assert_eq!(normal.path, "sub/one");
+
+        // Modified submodule without a description suffix.
+        let modified =
+            parse_submodule_line("+0123456789abcdef0123456789abcdef01234567 sub/two").unwrap();
+        assert_eq!(modified.state, '+');
+        assert_eq!(modified.path, "sub/two");
+
+        // Garbage lines (empty, short hashes, missing path) are skipped.
+        assert!(parse_submodule_line("").is_none());
+        assert!(parse_submodule_line("-zzzz sub/x").is_none());
+        assert!(parse_submodule_line(" a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 ").is_none());
+    }
 }
