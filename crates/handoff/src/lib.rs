@@ -442,14 +442,26 @@ fn resolve_file_in_root(root: &Path, raw: &str) -> ResolvedFile {
     }
 }
 
+fn truncate_multiline(s: &str, max: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max {
+        trimmed.to_string()
+    } else {
+        let cut: String = trimmed.chars().take(max).collect();
+        format!("{cut}...")
+    }
+}
+
 fn extract_from_session(
     session: &Session,
     project_root: &Path,
     repo: &RepositoryState,
 ) -> Extracted {
     let mut user_reqs: Vec<String> = Vec::new();
-    let mut all_assistant_msgs: Vec<(usize, String)> = Vec::new();
+    // (event_idx, full_multiline_up_to_2200, collapsed_single_line)
+    let mut all_assistant_msgs: Vec<(usize, String, String)> = Vec::new();
     let mut user_req_indices: Vec<(usize, String)> = Vec::new();
+    let mut last_error_idx: Option<usize> = None;
     for (idx, ev) in session.events.iter().enumerate() {
         if ev.kind == EventKind::UserMessage {
             if let Some(t) = &ev.content.text {
@@ -466,9 +478,15 @@ fn extract_from_session(
                 let (clean, _) = redact_text(t);
                 let trimmed = clean.trim();
                 if !trimmed.is_empty() {
-                    all_assistant_msgs.push((idx, collapse_text(trimmed, 260)));
+                    all_assistant_msgs.push((
+                        idx,
+                        truncate_multiline(trimmed, 2200),
+                        collapse_text(trimmed, 260),
+                    ));
                 }
             }
+        } else if ev.kind == EventKind::Error {
+            last_error_idx = Some(idx);
         }
     }
     let objective = user_reqs.first().cloned().unwrap_or_else(|| {
@@ -536,6 +554,15 @@ fn extract_from_session(
         }
     }
 
+    let dirty_set: BTreeSet<&str> = repo
+        .staged
+        .iter()
+        .chain(&repo.unstaged)
+        .map(|f| f.path.as_str())
+        .chain(repo.untracked.iter().map(|f| f.path.as_str()))
+        .collect();
+    let mut uncommitted_session_files: Vec<String> = Vec::new();
+
     // Verify FileChange events against live filesystem
     let mut seen_files: BTreeSet<String> = BTreeSet::new();
     for ev in &session.events {
@@ -574,6 +601,15 @@ fn extract_from_session(
             };
             let last_idx = last_change_idx.get(&display_path).copied().unwrap_or(0);
             if exists {
+                let is_dirty = dirty_set.contains(display_path.as_str());
+                if is_dirty {
+                    uncommitted_session_files.push(display_path.clone());
+                }
+                let title = if is_dirty {
+                    format!("Update {display_path} (uncommitted in working tree)")
+                } else {
+                    format!("Update {display_path}")
+                };
                 evidence.push(EvidenceItem {
                     id: eid.clone(),
                     claim: format!("File modified in session exists on disk: {display_path}"),
@@ -587,7 +623,7 @@ fn extract_from_session(
                 });
                 tasks.push(Task {
                     id: format!("TASK-{:03}", tasks.len() + 1),
-                    title: format!("Update {display_path}"),
+                    title,
                     status: TaskStatus::Completed,
                     confidence: Confidence::High,
                     evidence_refs: vec![eid],
@@ -759,24 +795,27 @@ fn extract_from_session(
         }
     }
 
-    // Collect recent assistant context (including the assistant message right before a short affirmative user reply)
+    // Collect recent assistant context (including the full multi-line assistant proposal before a short affirmative user reply)
     if let Some(&(last_u_idx, ref last_u_txt)) = user_req_indices.last() {
         if is_short_affirmative(last_u_txt) {
-            if let Some((_, plan_msg)) = all_assistant_msgs
+            if let Some((_, plan_full, _)) = all_assistant_msgs
                 .iter()
                 .rev()
-                .find(|(a_idx, _)| *a_idx < last_u_idx)
+                .find(|(a_idx, _, _)| *a_idx < last_u_idx)
             {
                 assistant_notes.push(format!(
-                    "[Assistant proposal before '{last_u_txt}'] {plan_msg}"
+                    "[Assistant proposal before '{last_u_txt}']\n{plan_full}"
                 ));
             }
         }
     }
     let tail_start = all_assistant_msgs.len().saturating_sub(4);
-    for (_, msg) in &all_assistant_msgs[tail_start..] {
-        if !assistant_notes.iter().any(|n| n.ends_with(msg)) {
-            assistant_notes.push(msg.clone());
+    for (_, _, msg_collapsed) in &all_assistant_msgs[tail_start..] {
+        if !assistant_notes
+            .iter()
+            .any(|n| n.ends_with(msg_collapsed) || n.contains(msg_collapsed))
+        {
+            assistant_notes.push(msg_collapsed.clone());
         }
     }
 
@@ -805,6 +844,30 @@ fn extract_from_session(
         }
     }
 
+    // If the session was interrupted by an error (e.g. 429 rate limit) after the last user message,
+    // capture the last assistant step + uncommitted files as an InProgress task.
+    let last_u_idx = user_req_indices.last().map(|(i, _)| *i).unwrap_or(0);
+    if last_error_idx.is_some_and(|e_idx| e_idx >= last_u_idx) {
+        if let Some((a_idx, _, last_step)) = all_assistant_msgs.last() {
+            if *a_idx > last_u_idx {
+                let dirty_suffix = if uncommitted_session_files.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [uncommitted: {}]", uncommitted_session_files.join(", "))
+                };
+                tasks.push(Task {
+                    id: format!("TASK-{:03}", tasks.len() + 1),
+                    title: format!(
+                        "Resume interrupted step{dirty_suffix}: {last_step}"
+                    ),
+                    status: TaskStatus::InProgress,
+                    confidence: Confidence::Medium,
+                    evidence_refs: Vec::new(),
+                });
+            }
+        }
+    }
+
     if session.parse_report.is_lossy() {
         uncertainties.push(format!(
             "Session parsing was lossy: {} unsupported event(s), {} error(s)",
@@ -825,8 +888,8 @@ fn extract_from_session(
             let prev_asst = all_assistant_msgs
                 .iter()
                 .rev()
-                .find(|(a_idx, _)| *a_idx < *last_u_idx)
-                .map(|(_, txt)| truncate_line(txt, 140));
+                .find(|(a_idx, _, _)| *a_idx < *last_u_idx)
+                .map(|(_, _, collapsed)| truncate_line(collapsed, 160));
             match (prev_user, prev_asst) {
                 (Some(pu), Some(pa)) => {
                     format!("{pu} → user confirmed '{last_req}' (assistant plan: {pa})")
@@ -999,7 +1062,13 @@ fn render_context_md(
     if !ext.assistant_notes.is_empty() {
         out.push_str("## Recent Assistant Context\n");
         for n in &ext.assistant_notes {
-            out.push_str(&format!("- {n}\n"));
+            let mut lines = n.lines();
+            if let Some(first) = lines.next() {
+                out.push_str(&format!("- {first}\n"));
+                for rest in lines {
+                    out.push_str(&format!("  {rest}\n"));
+                }
+            }
         }
         out.push('\n');
     }
