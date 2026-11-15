@@ -318,7 +318,7 @@ fn is_short_affirmative(s: &str) -> bool {
 }
 
 fn was_deleted_in_session_after(
-    events: &[ xm_relay_core::Event],
+    events: &[xm_relay_core::Event],
     after_idx: usize,
     display_path: &str,
 ) -> bool {
@@ -727,14 +727,13 @@ fn extract_from_session(
                     // Skip virtual URI tool failures, transient edit/write failures on files that
                     // have a successful FileChange in the session, and benign `rg`/`grep` exit-1 searches.
                     let is_virtual_uri = !raw_input_str.is_empty() && is_uri_path(raw_input_str);
-                    let resolved_in_session = matches!(
-                        tool_name,
-                        "edit" | "write" | "edit_file" | "write_file"
-                    ) && !raw_input_str.is_empty()
-                        && {
-                            let r = resolve_file_in_root(project_root, raw_input_str);
-                            last_change_idx.contains_key(&r.display_path)
-                        };
+                    let resolved_in_session =
+                        matches!(tool_name, "edit" | "write" | "edit_file" | "write_file")
+                            && !raw_input_str.is_empty()
+                            && {
+                                let r = resolve_file_in_root(project_root, raw_input_str);
+                                last_change_idx.contains_key(&r.display_path)
+                            };
                     if is_virtual_uri
                         || resolved_in_session
                         || is_benign_search_exit(tool_name, raw_input_str, &out_snip)
@@ -868,9 +867,7 @@ fn extract_from_session(
                 };
                 tasks.push(Task {
                     id: format!("TASK-{:03}", tasks.len() + 1),
-                    title: format!(
-                        "Resume interrupted step{dirty_suffix}: {last_step}"
-                    ),
+                    title: format!("Resume interrupted step{dirty_suffix}: {last_step}"),
                     status: TaskStatus::InProgress,
                     confidence: Confidence::Medium,
                     evidence_refs: Vec::new(),

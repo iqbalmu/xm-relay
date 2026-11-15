@@ -322,7 +322,9 @@ fn context_accuracy_handles_in_session_rm_multiline_and_affirmative_reply() {
                 actor: Actor::Tool,
                 content: EventContent {
                     text: None,
-                    structured: Some(json!({ "path": "lib/ui/app_lock_gate.dart", "tool": "write" })),
+                    structured: Some(
+                        json!({ "path": "lib/ui/app_lock_gate.dart", "tool": "write" }),
+                    ),
                 },
                 tool: None,
                 status: ToolStatus::Succeeded,
@@ -437,7 +439,10 @@ fn context_accuracy_handles_in_session_rm_multiline_and_affirmative_reply() {
                 kind: EventKind::AssistantMessage,
                 actor: Actor::Assistant,
                 content: EventContent {
-                    text: Some("Rencana berikutnya: implement bulk draft inbox action dan unit test.".into()),
+                    text: Some(
+                        "Rencana berikutnya: implement bulk draft inbox action dan unit test."
+                            .into(),
+                    ),
                     structured: None,
                 },
                 tool: None,
@@ -495,7 +500,9 @@ fn context_accuracy_handles_in_session_rm_multiline_and_affirmative_reply() {
         .contains("commit dan berikan rencana selanjutnya → user confirmed 'ya'"));
     assert!(detail.context_md.contains("## Recent Assistant Context"));
     // Transient edit mismatch and benign rg exit-1 are not in Failed Attempts
-    assert!(detail.context_md.contains("## Failed Attempts\n- None recorded."));
+    assert!(detail
+        .context_md
+        .contains("## Failed Attempts\n- None recorded."));
 
     // Re-validating the stored handoff also passes cleanly
     let reval = validate_handoff(&store, &detail.manifest.handoff_id, Some(&repo)).unwrap();

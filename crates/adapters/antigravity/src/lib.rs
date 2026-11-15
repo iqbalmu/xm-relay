@@ -334,10 +334,9 @@ impl Builder {
         let native = index.to_string();
         let ts = v["created_at"].as_str();
         // `thinking` is deliberately not transferred, so truncation of `thinking` alone is not lossy.
-        let truncated = v["truncated_fields"].as_array().is_some_and(|a| {
-            a.iter()
-                .any(|f| f.as_str().is_none_or(|s| s != "thinking"))
-        });
+        let truncated = v["truncated_fields"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|f| f.as_str().is_none_or(|s| s != "thinking")));
         let before = self.events.len();
 
         match v["type"].as_str().unwrap_or("") {

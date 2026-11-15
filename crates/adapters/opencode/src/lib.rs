@@ -554,7 +554,8 @@ mod path_extraction_tests {
             extract_opencode_file_paths("write", &json!({ "path": "xd://mcp__dart_dtd" }))
                 .is_empty()
         );
-        let patch = "*** Begin Patch\n*** Update File: src/lib.rs\n*** Add File: src/new.rs\n*** End Patch";
+        let patch =
+            "*** Begin Patch\n*** Update File: src/lib.rs\n*** Add File: src/new.rs\n*** End Patch";
         assert_eq!(
             extract_opencode_file_paths("patch", &json!({ "patchText": patch })),
             vec!["src/lib.rs".to_string(), "src/new.rs".to_string()]
