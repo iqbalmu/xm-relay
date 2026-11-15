@@ -4,14 +4,44 @@ use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use xm_relay_core::{Actor, AgentAdapter, AgentId, EventKind, SessionFilter, SessionSummary};
 use xm_relay_handoff as ho;
+
+/// Usable columns per terminal row. The last column is never written so the
+/// cursor cannot enter pending-wrap state; falls back to 79 when the size
+/// cannot be read.
+fn row_width() -> usize {
+    size().map_or(80, |(w, _)| w as usize).saturating_sub(1)
+}
+
+/// Clip a style-free string to `max` display columns, ending with `…` when trimmed.
+/// Keeps every rendered menu row on one terminal row so frame redraws that count
+/// printed `\r\n` lines never misplace the cursor.
+fn fit_to_width(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::with_capacity(max);
+    let budget = max.saturating_sub(1);
+    for c in s.chars() {
+        if out.width() + c.width().unwrap_or(0) > budget {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
 
 /// Prompt the user to select an item from `items` using Up/Down/j/k and Enter.
 /// Returns `Ok(None)` if the user cancels with `Esc` or `q`.
@@ -48,29 +78,34 @@ pub fn select_menu(
                 .min(items.len() - max_visible)
         };
         let end = (start + max_visible).min(items.len());
+        let width = row_width();
+        let hint = " (↑/↓ move, Enter select, Esc/q cancel)";
+        let shown_prompt = fit_to_width(prompt, width.saturating_sub(2 + hint.width()));
+        let shown_hint = fit_to_width(hint, width.saturating_sub(2 + shown_prompt.width()));
 
         let _ = execute!(
             stdout,
             SetForegroundColor(Color::Cyan),
             Print("? "),
             ResetColor,
-            Print(prompt),
+            Print(shown_prompt),
             SetForegroundColor(Color::DarkGrey),
-            Print(" (↑/↓ move, Enter select, Esc/q cancel)\r\n"),
+            Print(format!("{shown_hint}\r\n")),
             ResetColor
         );
         let mut lines = 1usize;
 
         for (i, item) in items.iter().enumerate().take(end).skip(start) {
+            let shown = fit_to_width(item, width.saturating_sub(4));
             if i == idx {
                 let _ = execute!(
                     stdout,
                     SetForegroundColor(Color::Green),
-                    Print(format!("  ❯ {item}\r\n")),
+                    Print(format!("  ❯ {shown}\r\n")),
                     ResetColor
                 );
             } else {
-                let _ = execute!(stdout, Print(format!("    {item}\r\n")));
+                let _ = execute!(stdout, Print(format!("    {shown}\r\n")));
             }
             lines += 1;
         }
@@ -211,6 +246,7 @@ pub fn pick_session(
             );
         }
 
+        let width = row_width();
         let scope_badge = if global {
             "Global (All Directories)".to_string()
         } else {
@@ -219,14 +255,20 @@ pub fn pick_session(
         };
         let agent_badge = agent_filter.map(|a| a.as_str()).unwrap_or("All Agents");
 
+        let header = "Select a session to hand off ";
+        let badge = fit_to_width(
+            &format!("[{scope_badge} • {agent_badge}]"),
+            width.saturating_sub(2 + header.width()),
+        );
+
         let _ = execute!(
             stdout,
             SetForegroundColor(Color::Cyan),
             Print("? "),
             ResetColor,
-            Print("Select a session to hand off "),
+            Print(header),
             SetForegroundColor(Color::Yellow),
-            Print(format!("[{scope_badge} • {agent_badge}]")),
+            Print(badge),
             ResetColor,
             Print("\r\n")
         );
@@ -234,28 +276,32 @@ pub fn pick_session(
 
         if search_mode || !search_query.is_empty() {
             let cursor = if search_mode { "▏" } else { "" };
+            let suffix = if search_mode {
+                "  (Enter to finish search, Esc to clear)"
+            } else {
+                "  ([/] to edit search)"
+            };
+            let shown_query = fit_to_width(
+                &format!("{search_query}{cursor}"),
+                width.saturating_sub("  Search: ".width() + suffix.width()),
+            );
             let _ = execute!(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
                 Print("  Search: "),
                 SetForegroundColor(Color::White),
-                Print(format!("{search_query}{cursor}")),
+                Print(shown_query),
                 SetForegroundColor(Color::DarkGrey),
-                Print(if search_mode {
-                    "  (Enter to finish search, Esc to clear)\r\n"
-                } else {
-                    "  ([/] to edit search)\r\n"
-                }),
+                Print(format!("{suffix}\r\n")),
                 ResetColor
             );
             lines += 1;
         } else {
+            let hints = "  (↑/↓ move • Enter select • [g] Scope: Dir/Global • [a] Filter Agent • [/] Search • Esc cancel)";
             let _ = execute!(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
-                Print(
-                    "  (↑/↓ move • Enter select • [g] Scope: Dir/Global • [a] Filter Agent • [/] Search • Esc cancel)\r\n"
-                ),
+                Print(format!("{}\r\n", fit_to_width(hints, width))),
                 ResetColor
             );
             lines += 1;
@@ -265,9 +311,13 @@ pub fn pick_session(
             let _ = execute!(
                 stdout,
                 SetForegroundColor(Color::DarkGrey),
-                Print(
-                    "    (No matching sessions found — press [g] for Global scope or [a] to switch agent)\r\n"
-                ),
+                Print(format!(
+                    "{}\r\n",
+                    fit_to_width(
+                        "    (No matching sessions found — press [g] for Global scope or [a] to switch agent)",
+                        width
+                    )
+                )),
                 ResetColor
             );
             lines += 1;
@@ -298,13 +348,16 @@ pub fn pick_session(
                 } else {
                     String::new()
                 };
-                let row = format!(
-                    "[{}] {} — {} ({} ev{})",
-                    s.agent.as_str(),
-                    title,
-                    rel_time,
-                    s.event_count,
-                    dir_suffix
+                let row = fit_to_width(
+                    &format!(
+                        "[{}] {} — {} ({} ev{})",
+                        s.agent.as_str(),
+                        title,
+                        rel_time,
+                        s.event_count,
+                        dir_suffix
+                    ),
+                    width.saturating_sub(4),
                 );
                 if i == idx {
                     let _ = execute!(
@@ -824,6 +877,23 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fit_to_width_clips_on_display_columns() {
+        let long = "[omp → antigravity-cli] audit apalagi yang bisa ditingkatkan — 12h ago";
+        let clipped = fit_to_width(long, 30);
+        assert_eq!(clipped.chars().count(), 30);
+        assert!(clipped.ends_with('…'));
+        assert_eq!(fit_to_width("short", 10), "short");
+        // wide chars count two columns
+        assert_eq!(fit_to_width("タスク状態", 8), "タスク…");
+        // result never exceeds the budget for any input/budget pair
+        for s in [long, "タスク状態", "plain"] {
+            for max in [0usize, 1, 5, 30, 200] {
+                assert!(fit_to_width(s, max).width() <= max);
+            }
+        }
+    }
 
     #[test]
     fn test_clean_snippet_strips_user_request_and_truncates() {
