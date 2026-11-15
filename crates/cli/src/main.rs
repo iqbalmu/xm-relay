@@ -55,6 +55,9 @@ enum Command {
         project: Option<std::path::PathBuf>,
         #[arg(long)]
         store: Option<std::path::PathBuf>,
+        /// Override preflight Blocked status and emit the continuation prompt anyway
+        #[arg(long)]
+        force: bool,
     },
     /// Show overall status of agents, current project, checkpoints, and handoffs
     Status {
@@ -1152,16 +1155,16 @@ fn continue_cmd(
     to: Option<String>,
     project: Option<std::path::PathBuf>,
     store: Option<std::path::PathBuf>,
+    force: bool,
 ) -> Result<ExitCode, String> {
     let sdir = handoff_store_dir(store)?;
     let mut d = ho::validate_handoff(&sdir, id, project.as_deref()).map_err(|e| e.to_string())?;
     if let Some(t) = to {
         d.manifest.target_agent = parse_agent_id(&t)?;
     }
-    if matches!(
-        d.validation.status,
-        ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed
-    ) {
+    if d.validation.status == ho::PreflightStatus::Failed
+        || (d.validation.status == ho::PreflightStatus::Blocked && !force)
+    {
         eprintln!(
             "BLOCKED: handoff {} failed preflight ({:?}). Resolve conflicts before continuing:",
             id, d.validation.status
@@ -1174,8 +1177,15 @@ fn continue_cmd(
         }
         return Ok(preflight_exit_code(&d.validation.status));
     }
+    let conflicts_acknowledged = d.validation.status == ho::PreflightStatus::Blocked && force;
+    if conflicts_acknowledged {
+        eprintln!("WARNING: proceeding with acknowledged preflight conflicts (--force).");
+    }
     let pkg_dir = sdir.join(id);
-    println!("{}", ho::generate_continuation_prompt(&d, &pkg_dir));
+    println!(
+        "{}",
+        ho::generate_continuation_prompt_with_options(&d, &pkg_dir, conflicts_acknowledged)
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1392,8 +1402,9 @@ fn main() -> ExitCode {
             to,
             project,
             store,
+            force,
         } => {
-            return match continue_cmd(&handoff_id, to, project, store) {
+            return match continue_cmd(&handoff_id, to, project, store, force) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");

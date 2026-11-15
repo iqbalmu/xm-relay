@@ -619,18 +619,35 @@ pub fn handle_handoff_ready(detail: &ho::HandoffDetail, store_dir: &Path) -> Res
     }
     println!();
 
-    if matches!(
-        v.status,
-        ho::PreflightStatus::Blocked | ho::PreflightStatus::Failed
-    ) {
+    if v.status == ho::PreflightStatus::Failed {
         return Err(format!(
-            "Handoff {} blocked by preflight ({:?}). Resolve conflicts before continuing.",
+            "Handoff {} failed preflight ({:?}). Resolve errors before continuing.",
             m.handoff_id, v.status
         ));
     }
+    let mut conflicts_acknowledged = false;
+    if v.status == ho::PreflightStatus::Blocked {
+        let choice = select_menu(
+            "Preflight is blocked by conflicts. How do you want to proceed?",
+            &[
+                "Abort (resolve conflicts first)".to_string(),
+                "Continue anyway (acknowledge conflicts and proceed)".to_string(),
+            ],
+            0,
+        )?;
+        if choice != Some(1) {
+            return Err(format!(
+                "Handoff {} blocked by preflight ({:?}). Resolve conflicts before continuing.",
+                m.handoff_id, v.status
+            ));
+        }
+        conflicts_acknowledged = true;
+        println!("⚠ Proceeding with acknowledged preflight conflicts.\n");
+    }
 
     let pkg_dir = store_dir.join(&m.handoff_id);
-    let prompt = ho::generate_continuation_prompt(detail, &pkg_dir);
+    let prompt =
+        ho::generate_continuation_prompt_with_options(detail, &pkg_dir, conflicts_acknowledged);
 
     let actions = vec![
         format!(

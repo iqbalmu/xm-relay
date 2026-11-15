@@ -184,6 +184,17 @@ fn builds_verifies_redacts_and_detects_missing_file_conflict() {
     let blocked = create_handoff(&bad_sess, AgentId::AntigravityCli, Some(&repo), &store).unwrap();
     assert_eq!(blocked.validation.status, PreflightStatus::Blocked);
     assert_eq!(blocked.manifest.confidence.overall, Confidence::Low);
+
+    let blocked_pkg = store.join(&blocked.manifest.handoff_id);
+    let unack_prompt = generate_continuation_prompt(&blocked, &blocked_pkg);
+    assert!(unack_prompt.contains("Preflight status: Blocked\n"));
+    assert!(!unack_prompt.contains("already acknowledged"));
+
+    let ack_prompt =
+        xm_relay_handoff::generate_continuation_prompt_with_options(&blocked, &blocked_pkg, true);
+    assert!(ack_prompt.contains("Preflight status: Blocked (conflicts acknowledged by user)"));
+    assert!(ack_prompt.contains("already acknowledged the preflight conflicts"));
+    assert!(ack_prompt.contains("ask for user approval before editing any code"));
 }
 
 #[test]
@@ -248,4 +259,245 @@ fn trimmed_checksums_file_does_not_hide_tampering() {
         .checksum_errors
         .iter()
         .any(|e| e.contains("not covered by checksums.txt") && e.contains("context.md")));
+}
+
+#[test]
+fn context_accuracy_handles_in_session_rm_multiline_and_affirmative_reply() {
+    let t = Tmp::new("ctx-acc");
+    let repo = t.0.join("repo");
+    let store = t.0.join("store");
+    fs::create_dir_all(repo.join("lib/ui")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("lib/main.dart"), "void main() {}\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+
+    let sess = Session {
+        id: "ses_acc".into(),
+        agent: AgentInfo {
+            id: AgentId::Omp,
+            version: Some("1.0".into()),
+            adapter_version: "0.1.0".into(),
+        },
+        source: SessionSource {
+            path: "/tmp/omp.jsonl".into(),
+            format: "omp-jsonl".into(),
+            format_version: Some("3".into()),
+        },
+        project: Some(ProjectRef {
+            root: repo.display().to_string(),
+            repository: true,
+        }),
+        started_at: None,
+        updated_at: None,
+        events: vec![
+            // 1. Multi-line user message starting with [Image ...]
+            Event {
+                id: "e1".into(),
+                sequence: 1,
+                timestamp: None,
+                kind: EventKind::UserMessage,
+                actor: Actor::User,
+                content: EventContent {
+                    text: Some(
+                        "[Image #1, 480x360]\n\nhapus aja fitur kunci app ini untuk sekarang"
+                            .into(),
+                    ),
+                    structured: None,
+                },
+                tool: None,
+                status: ToolStatus::Unknown,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("u1".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 2. File createdearlier in session (`lib/ui/app_lock_gate.dart`)
+            Event {
+                id: "e2".into(),
+                sequence: 2,
+                timestamp: None,
+                kind: EventKind::FileChange,
+                actor: Actor::Tool,
+                content: EventContent {
+                    text: None,
+                    structured: Some(json!({ "path": "lib/ui/app_lock_gate.dart", "tool": "write" })),
+                },
+                tool: None,
+                status: ToolStatus::Succeeded,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("fc1".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 3. Transient edit failure on `lib/main.dart`, resolved by a later FileChange
+            Event {
+                id: "e3".into(),
+                sequence: 3,
+                timestamp: None,
+                kind: EventKind::ToolResult,
+                actor: Actor::Tool,
+                content: EventContent::default(),
+                tool: Some(ToolInfo {
+                    name: "edit".into(),
+                    input: Some(json!({ "path": "lib/main.dart" })),
+                    output: Some("Could not find a close enough match".into()),
+                }),
+                status: ToolStatus::Failed,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("tr1".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 4. Subsequent successful edit on `lib/main.dart`
+            Event {
+                id: "e4".into(),
+                sequence: 4,
+                timestamp: None,
+                kind: EventKind::FileChange,
+                actor: Actor::Tool,
+                content: EventContent {
+                    text: None,
+                    structured: Some(json!({ "path": "lib/main.dart", "tool": "edit" })),
+                },
+                tool: None,
+                status: ToolStatus::Succeeded,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("fc2".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 5. Agent deletes `lib/ui/app_lock_gate.dart` via bash `rm`
+            Event {
+                id: "e5".into(),
+                sequence: 5,
+                timestamp: None,
+                kind: EventKind::ToolResult,
+                actor: Actor::Tool,
+                content: EventContent::default(),
+                tool: Some(ToolInfo {
+                    name: "bash".into(),
+                    input: Some(json!({ "command": "rm lib/ui/app_lock_gate.dart" })),
+                    output: Some("deleted".into()),
+                }),
+                status: ToolStatus::Succeeded,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("tr2".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 6. Benign `rg` exit-1 check
+            Event {
+                id: "e6".into(),
+                sequence: 6,
+                timestamp: None,
+                kind: EventKind::ToolResult,
+                actor: Actor::Tool,
+                content: EventContent::default(),
+                tool: Some(ToolInfo {
+                    name: "bash".into(),
+                    input: Some(json!({ "command": "rg -n app_lock lib/" })),
+                    output: Some("stragglers-exit=1".into()),
+                }),
+                status: ToolStatus::Failed,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("tr3".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            // 7. User asks for plan -> Assistant proposes plan -> User says "ya"
+            Event {
+                id: "e7".into(),
+                sequence: 7,
+                timestamp: None,
+                kind: EventKind::UserMessage,
+                actor: Actor::User,
+                content: EventContent {
+                    text: Some("commit dan berikan rencana selanjutnya".into()),
+                    structured: None,
+                },
+                tool: None,
+                status: ToolStatus::Unknown,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("u2".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            Event {
+                id: "e8".into(),
+                sequence: 8,
+                timestamp: None,
+                kind: EventKind::AssistantMessage,
+                actor: Actor::Assistant,
+                content: EventContent {
+                    text: Some("Rencana berikutnya: implement bulk draft inbox action dan unit test.".into()),
+                    structured: None,
+                },
+                tool: None,
+                status: ToolStatus::Unknown,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("a1".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+            Event {
+                id: "e9".into(),
+                sequence: 9,
+                timestamp: None,
+                kind: EventKind::UserMessage,
+                actor: Actor::User,
+                content: EventContent {
+                    text: Some("ya".into()),
+                    structured: None,
+                },
+                tool: None,
+                status: ToolStatus::Unknown,
+                source_ref: EventSourceRef {
+                    session_id: "ses_acc".into(),
+                    native_event_id: Some("u3".into()),
+                },
+                parse_status: ParseStatus::Parsed,
+            },
+        ],
+        parse_report: ParseReport {
+            total_events: 9,
+            parsed_events: 9,
+            unsupported: Vec::new(),
+            errors: Vec::new(),
+        },
+    };
+
+    let detail = create_handoff(&sess, AgentId::AntigravityCli, Some(&repo), &store).unwrap();
+    // No conflicts! `lib/ui/app_lock_gate.dart` was deleted in session.
+    assert!(detail.validation.conflicts.is_empty());
+    assert_eq!(detail.validation.status, PreflightStatus::Passed);
+    assert_eq!(detail.manifest.confidence.overall, Confidence::High);
+
+    // Multi-line user message preserved beyond `[Image #1, ...]`
+    assert!(detail
+        .context_md
+        .contains("hapus aja fitur kunci app ini untuk sekarang"));
+    // Removed file is recorded as completed `Remove lib/ui/app_lock_gate.dart`
+    assert!(detail
+        .context_md
+        .contains("Remove lib/ui/app_lock_gate.dart"));
+    // Short affirmative "ya" resolved with previous user request + assistant plan
+    assert!(detail
+        .context_md
+        .contains("commit dan berikan rencana selanjutnya → user confirmed 'ya'"));
+    assert!(detail.context_md.contains("## Recent Assistant Context"));
+    // Transient edit mismatch and benign rg exit-1 are not in Failed Attempts
+    assert!(detail.context_md.contains("## Failed Attempts\n- None recorded."));
+
+    // Re-validating the stored handoff also passes cleanly
+    let reval = validate_handoff(&store, &detail.manifest.handoff_id, Some(&repo)).unwrap();
+    assert_eq!(reval.validation.status, PreflightStatus::Passed);
 }

@@ -554,7 +554,11 @@ impl Builder {
         );
 
         if matches!(name.as_str(), "edit" | "write") && status == ToolStatus::Succeeded {
-            if let Some(path) = input.as_ref().and_then(|i| i["path"].as_str()) {
+            if let Some(path) = input
+                .as_ref()
+                .and_then(|i| i["path"].as_str())
+                .filter(|p| !is_uri_path(p))
+            {
                 self.report.total_events += 1;
                 let content = EventContent {
                     text: None,
@@ -573,6 +577,17 @@ impl Builder {
             }
         }
     }
+}
+
+/// Returns true for virtual/tool URI paths like `xd://mcp__dart_dtd`.
+fn is_uri_path(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
 /// Joins text blocks of a content value (string or block array).

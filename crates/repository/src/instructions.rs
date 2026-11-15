@@ -17,6 +17,8 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
     "dist",
     "build",
+    "out",
+    "coverage",
     ".venv",
     "venv",
     "__pycache__",
@@ -26,7 +28,17 @@ const SKIP_DIRS: &[&str] = &[
     ".pytest_cache",
     ".cache",
     ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".parcel-cache",
+    ".angular",
     ".turbo",
+    ".dart_tool",
+    ".gradle",
+    "Pods",
+    ".idea",
+    ".vscode",
+    ".superpowers",
 ];
 
 /// (relative path, kind). Only widely documented names; extend with evidence.

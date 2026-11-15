@@ -146,3 +146,29 @@ fn missing_session_and_dir() {
     assert!(!m.detect().unwrap().available);
     assert!(m.list_sessions(&SessionFilter::default()).is_err());
 }
+
+#[test]
+fn ignores_virtual_uri_paths_for_file_change() {
+    let dir = std::env::temp_dir().join(format!("xmr-omp-uri-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let jsonl = [
+        r#"{"type":"session","version":3,"id":"uri-sess","timestamp":"2026-11-15T14:36:43.676Z","cwd":"/tmp/proj"}"#,
+        r#"{"type":"message","id":"m1","timestamp":"2026-11-15T14:36:44Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"xd://mcp__dart_dtd","content":"x"}},{"type":"toolCall","id":"c2","name":"edit","arguments":{"path":"lib/main.dart","oldText":"a","newText":"b"}}]}}"#,
+        r#"{"type":"message","id":"r1","timestamp":"2026-11-15T14:36:45Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"write","isError":false,"content":[{"type":"text","text":"ok"}]}}"#,
+        r#"{"type":"message","id":"r2","timestamp":"2026-11-15T14:36:46Z","message":{"role":"toolResult","toolCallId":"c2","toolName":"edit","isError":false,"content":[{"type":"text","text":"ok"}]}}"#,
+    ]
+    .join("\n");
+    std::fs::write(proj.join("2026-11-15T14-36-43-676Z_uri-sess.jsonl"), jsonl).unwrap();
+
+    let s = OmpAdapter::new(&dir).read_session("uri-sess").unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let changes: Vec<_> = s
+        .events
+        .iter()
+        .filter(|e| e.kind == EventKind::FileChange)
+        .filter_map(|e| e.content.structured.as_ref()?.get("path")?.as_str())
+        .collect();
+    assert_eq!(changes, ["lib/main.dart"]);
+}

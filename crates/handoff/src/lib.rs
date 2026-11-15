@@ -248,6 +248,7 @@ fn write_pkg_file(
 struct Extracted {
     objective: String,
     user_reqs: Vec<String>,
+    assistant_notes: Vec<String>,
     tasks: Vec<Task>,
     evidence: Vec<EvidenceItem>,
     conflicts: Vec<ConflictItem>,
@@ -270,13 +271,138 @@ fn truncate_line(s: &str, max: usize) -> String {
     }
 }
 
+/// Collapse multi-line text into a single line so messages starting with
+/// `[Image #1, ...]` on line 1 do not lose the actual user instruction on line 2+.
+fn collapse_text(s: &str, max: usize) -> String {
+    let joined: String = s
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.chars().count() <= max {
+        joined
+    } else {
+        let cut: String = joined.chars().take(max).collect();
+        format!("{cut}...")
+    }
+}
+
+fn is_short_affirmative(s: &str) -> bool {
+    let norm: String = s
+        .trim()
+        .trim_matches(|c: char| c.is_ascii_punctuation())
+        .to_ascii_lowercase();
+    matches!(
+        norm.as_str(),
+        "ya" | "yap"
+            | "iya"
+            | "y"
+            | "ok"
+            | "oke"
+            | "okay"
+            | "lanjut"
+            | "lanjutkan"
+            | "gas"
+            | "sip"
+            | "setuju"
+            | "yes"
+            | "yep"
+            | "sure"
+            | "go"
+            | "go ahead"
+            | "proceed"
+            | "do it"
+            | "continue"
+    )
+}
+
+fn was_deleted_in_session_after(
+    events: &[ xm_relay_core::Event],
+    after_idx: usize,
+    display_path: &str,
+) -> bool {
+    if display_path.is_empty() {
+        return false;
+    }
+    for ev in events.iter().skip(after_idx + 1) {
+        if ev.status == ToolStatus::Failed {
+            continue;
+        }
+        let Some(tool) = &ev.tool else {
+            continue;
+        };
+        let tname = tool.name.to_ascii_lowercase();
+        let Some(inp) = &tool.input else {
+            continue;
+        };
+        if tname.contains("delete") || tname.contains("remove") {
+            let p = inp["path"]
+                .as_str()
+                .or_else(|| inp["Path"].as_str())
+                .unwrap_or("");
+            if p == display_path || p.ends_with(&format!("/{display_path}")) {
+                return true;
+            }
+        }
+        let cmd = inp["command"]
+            .as_str()
+            .or_else(|| inp["CommandLine"].as_str())
+            .unwrap_or("");
+        if !cmd.is_empty() && cmd.contains(display_path) {
+            let has_rm = cmd.contains("rm ")
+                || cmd.contains("rm\t")
+                || cmd.contains("git rm")
+                || cmd.contains("git clean")
+                || cmd.contains("git checkout")
+                || cmd.contains("git restore")
+                || cmd.contains("unlink ");
+            if has_rm {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_benign_search_exit(tool_name: &str, raw_cmd: &str, out_snip: &str) -> bool {
+    if !matches!(tool_name, "bash" | "run_command" | "shell") {
+        return false;
+    }
+    let has_search = raw_cmd.contains("rg ") || raw_cmd.contains("grep ");
+    let no_destructive = !raw_cmd.contains("rm ") && !raw_cmd.contains("mv ");
+    has_search
+        && no_destructive
+        && (out_snip == "failed"
+            || out_snip.is_empty()
+            || out_snip.contains("stragglers-exit=1")
+            || !out_snip.to_ascii_lowercase().contains("error"))
+}
+
 struct ResolvedFile {
     display_path: String,
     full_path: PathBuf,
     in_workspace: bool,
 }
 
+fn is_uri_path(raw: &str) -> bool {
+    let Some((scheme, _)) = raw.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
 fn resolve_file_in_root(root: &Path, raw: &str) -> ResolvedFile {
+    if is_uri_path(raw) {
+        return ResolvedFile {
+            display_path: raw.to_string(),
+            full_path: PathBuf::from(raw),
+            in_workspace: false,
+        };
+    }
     let p = Path::new(raw);
     if let Ok(rel) = p.strip_prefix(root) {
         let r = rel.to_string_lossy().into_owned();
@@ -322,13 +448,25 @@ fn extract_from_session(
     repo: &RepositoryState,
 ) -> Extracted {
     let mut user_reqs: Vec<String> = Vec::new();
-    for ev in &session.events {
+    let mut all_assistant_msgs: Vec<(usize, String)> = Vec::new();
+    let mut user_req_indices: Vec<(usize, String)> = Vec::new();
+    for (idx, ev) in session.events.iter().enumerate() {
         if ev.kind == EventKind::UserMessage {
             if let Some(t) = &ev.content.text {
                 let (clean, _) = redact_text(t);
                 let trimmed = clean.trim();
                 if !trimmed.is_empty() {
-                    user_reqs.push(truncate_line(trimmed, 160));
+                    let collapsed = collapse_text(trimmed, 240);
+                    user_reqs.push(collapsed.clone());
+                    user_req_indices.push((idx, collapsed));
+                }
+            }
+        } else if ev.kind == EventKind::AssistantMessage {
+            if let Some(t) = &ev.content.text {
+                let (clean, _) = redact_text(t);
+                let trimmed = clean.trim();
+                if !trimmed.is_empty() {
+                    all_assistant_msgs.push((idx, collapse_text(trimmed, 260)));
                 }
             }
         }
@@ -343,6 +481,7 @@ fn extract_from_session(
     let mut failed_attempts: Vec<String> = Vec::new();
     let mut known_issues: Vec<String> = Vec::new();
     let mut uncertainties: Vec<String> = Vec::new();
+    let mut assistant_notes: Vec<String> = Vec::new();
 
     // Check session project root vs live project root
     if let Some(sp) = &session.project {
@@ -378,6 +517,23 @@ fn extract_from_session(
             ),
             evidence_ref: None,
         });
+    }
+
+    // Map each workspace display_path to its last FileChange event index
+    let mut last_change_idx: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (idx, ev) in session.events.iter().enumerate() {
+        if ev.kind == EventKind::FileChange {
+            if let Some(raw_path) = ev
+                .content
+                .structured
+                .as_ref()
+                .and_then(|s| s["path"].as_str())
+            {
+                let resolved = resolve_file_in_root(project_root, raw_path);
+                last_change_idx.insert(resolved.display_path, idx);
+            }
+        }
     }
 
     // Verify FileChange events against live filesystem
@@ -416,6 +572,7 @@ fn extract_from_session(
                 path: Some(display_path.clone()),
                 commit: repo.head_commit.clone(),
             };
+            let last_idx = last_change_idx.get(&display_path).copied().unwrap_or(0);
             if exists {
                 evidence.push(EvidenceItem {
                     id: eid.clone(),
@@ -431,6 +588,27 @@ fn extract_from_session(
                 tasks.push(Task {
                     id: format!("TASK-{:03}", tasks.len() + 1),
                     title: format!("Update {display_path}"),
+                    status: TaskStatus::Completed,
+                    confidence: Confidence::High,
+                    evidence_refs: vec![eid],
+                });
+            } else if was_deleted_in_session_after(&session.events, last_idx, &display_path) {
+                evidence.push(EvidenceItem {
+                    id: eid.clone(),
+                    claim: format!(
+                        "File modified and subsequently removed in session: {display_path}"
+                    ),
+                    classification: Classification::Verified,
+                    source_type: SourceType::Repository,
+                    source_ref: sref,
+                    verification: Verification {
+                        method: "session_deleted_check".into(),
+                        result: "passed".into(),
+                    },
+                });
+                tasks.push(Task {
+                    id: format!("TASK-{:03}", tasks.len() + 1),
+                    title: format!("Remove {display_path}"),
                     status: TaskStatus::Completed,
                     confidence: Confidence::High,
                     evidence_refs: vec![eid],
@@ -477,7 +655,7 @@ fn extract_from_session(
                 answered_calls.insert(nid.clone());
             }
             let tool_name = ev.tool.as_ref().map(|t| t.name.as_str()).unwrap_or("tool");
-            let cmd_desc = ev
+            let raw_input_str = ev
                 .tool
                 .as_ref()
                 .and_then(|t| t.input.as_ref())
@@ -488,18 +666,35 @@ fn extract_from_session(
                         .or_else(|| i["path"].as_str())
                         .or_else(|| i["Path"].as_str())
                 })
-                .map(|s| truncate_line(&redact_text(s).0, 80))
                 .unwrap_or_default();
+            let cmd_desc = truncate_line(&redact_text(raw_input_str).0, 80);
 
             match ev.status {
                 ToolStatus::Failed => {
-                    let eid = format!("E-{:03}", evidence.len() + 1);
                     let out_snip = ev
                         .tool
                         .as_ref()
                         .and_then(|t| t.output.as_deref())
                         .map(|o| truncate_line(&redact_text(o).0, 100))
                         .unwrap_or_else(|| "failed".into());
+                    // Skip virtual URI tool failures, transient edit/write failures on files that
+                    // have a successful FileChange in the session, and benign `rg`/`grep` exit-1 searches.
+                    let is_virtual_uri = !raw_input_str.is_empty() && is_uri_path(raw_input_str);
+                    let resolved_in_session = matches!(
+                        tool_name,
+                        "edit" | "write" | "edit_file" | "write_file"
+                    ) && !raw_input_str.is_empty()
+                        && {
+                            let r = resolve_file_in_root(project_root, raw_input_str);
+                            last_change_idx.contains_key(&r.display_path)
+                        };
+                    if is_virtual_uri
+                        || resolved_in_session
+                        || is_benign_search_exit(tool_name, raw_input_str, &out_snip)
+                    {
+                        continue;
+                    }
+                    let eid = format!("E-{:03}", evidence.len() + 1);
                     let msg = format!("{tool_name} ({cmd_desc}) failed: {out_snip}");
                     evidence.push(EvidenceItem {
                         id: eid,
@@ -546,7 +741,10 @@ fn extract_from_session(
             known_issues.push(txt);
         } else if matches!(ev.kind, EventKind::Compaction | EventKind::Checkpoint) {
             if let Some(txt) = &ev.content.text {
-                let clean = truncate_line(&redact_text(txt).0, 140);
+                let clean = collapse_text(&redact_text(txt).0, 280);
+                if !clean.is_empty() {
+                    assistant_notes.push(format!("[Compaction summary] {clean}"));
+                }
                 let eid = format!("E-{:03}", evidence.len() + 1);
                 evidence.push(EvidenceItem::reported(
                     &eid,
@@ -558,6 +756,27 @@ fn extract_from_session(
                     },
                 ));
             }
+        }
+    }
+
+    // Collect recent assistant context (including the assistant message right before a short affirmative user reply)
+    if let Some(&(last_u_idx, ref last_u_txt)) = user_req_indices.last() {
+        if is_short_affirmative(last_u_txt) {
+            if let Some((_, plan_msg)) = all_assistant_msgs
+                .iter()
+                .rev()
+                .find(|(a_idx, _)| *a_idx < last_u_idx)
+            {
+                assistant_notes.push(format!(
+                    "[Assistant proposal before '{last_u_txt}'] {plan_msg}"
+                ));
+            }
+        }
+    }
+    let tail_start = all_assistant_msgs.len().saturating_sub(4);
+    for (_, msg) in &all_assistant_msgs[tail_start..] {
+        if !assistant_notes.iter().any(|n| n.ends_with(msg)) {
+            assistant_notes.push(msg.clone());
         }
     }
 
@@ -594,11 +813,34 @@ fn extract_from_session(
         ));
     }
 
-    // Ensure at least one pending continuation task
-    if let Some(last_req) = user_reqs.last() {
+    // Ensure at least one pending continuation task (resolve short affirmative replies like "ya")
+    if let Some((last_u_idx, last_req)) = user_req_indices.last() {
+        let pending_desc = if is_short_affirmative(last_req) {
+            let prev_user = user_req_indices
+                .iter()
+                .rev()
+                .skip(1)
+                .find(|(_, txt)| !is_short_affirmative(txt))
+                .map(|(_, txt)| txt.as_str());
+            let prev_asst = all_assistant_msgs
+                .iter()
+                .rev()
+                .find(|(a_idx, _)| *a_idx < *last_u_idx)
+                .map(|(_, txt)| truncate_line(txt, 140));
+            match (prev_user, prev_asst) {
+                (Some(pu), Some(pa)) => {
+                    format!("{pu} → user confirmed '{last_req}' (assistant plan: {pa})")
+                }
+                (Some(pu), None) => format!("{pu} (confirmed: '{last_req}')"),
+                (None, Some(pa)) => format!("'{last_req}' — {pa}"),
+                (None, None) => last_req.clone(),
+            }
+        } else {
+            last_req.clone()
+        };
         tasks.push(Task {
             id: format!("TASK-{:03}", tasks.len() + 1),
-            title: format!("Verify and complete user request: {last_req}"),
+            title: format!("Verify and complete user request: {pending_desc}"),
             status: TaskStatus::Pending,
             confidence: Confidence::Medium,
             evidence_refs: Vec::new(),
@@ -608,6 +850,7 @@ fn extract_from_session(
     Extracted {
         objective,
         user_reqs,
+        assistant_notes,
         tasks,
         evidence,
         conflicts,
@@ -695,6 +938,7 @@ fn render_context_md(
     manifest: &HandoffManifest,
     ext: &Extracted,
     instructions: &InstructionSet,
+    repo: &RepositoryState,
 ) -> String {
     let mut out = String::new();
     out.push_str("# Handoff Context\n\n");
@@ -711,6 +955,20 @@ fn render_context_md(
         manifest.confidence.overall,
         manifest.confidence.reason
     ));
+
+    if repo.working_tree_dirty {
+        out.push_str("## Working Tree Changes\n");
+        for f in &repo.staged {
+            out.push_str(&format!("- [staged `{}`] `{}`\n", f.status, f.path));
+        }
+        for f in &repo.unstaged {
+            out.push_str(&format!("- [unstaged `{}`] `{}`\n", f.status, f.path));
+        }
+        for f in &repo.untracked {
+            out.push_str(&format!("- [untracked] `{}`\n", f.path));
+        }
+        out.push('\n');
+    }
 
     out.push_str("## Objective\n");
     out.push_str(&format!("{}\n\n", ext.objective));
@@ -734,6 +992,14 @@ fn render_context_md(
     } else {
         for r in &ext.user_reqs {
             out.push_str(&format!("- {r}\n"));
+        }
+        out.push('\n');
+    }
+
+    if !ext.assistant_notes.is_empty() {
+        out.push_str("## Recent Assistant Context\n");
+        for n in &ext.assistant_notes {
+            out.push_str(&format!("- {n}\n"));
         }
         out.push('\n');
     }
@@ -1027,7 +1293,7 @@ pub fn create_handoff(
     let evidence = Evidence {
         items: ext.evidence.clone(),
     };
-    let context_md = render_context_md(&manifest, &ext, &instructions);
+    let context_md = render_context_md(&manifest, &ext, &instructions, &repo_state);
 
     let mut files = Vec::new();
     write_pkg_file(&pkg_dir, "context.md", context_md.as_bytes(), &mut files)?;
@@ -1244,7 +1510,9 @@ pub fn validate_handoff(
 
     // Re-check verified workspace file claims on live disk
     for item in &evidence.items {
-        if item.classification == Classification::Verified {
+        if item.classification == Classification::Verified
+            && item.verification.method == "filesystem_exists_check"
+        {
             if let Some(p) = &item.source_ref.path {
                 if !Path::new(p).is_absolute() && !live_root.join(p).exists() {
                     conflicts.push(ConflictItem {
@@ -1303,11 +1571,39 @@ pub fn validate_handoff(
 
 /// Generate the target-agent preflight continuation prompt (spec section 12.3).
 pub fn generate_continuation_prompt(detail: &HandoffDetail, package_dir: &Path) -> String {
+    generate_continuation_prompt_with_options(detail, package_dir, false)
+}
+
+/// Generate the target-agent preflight continuation prompt, optionally marking
+/// preflight conflicts as already acknowledged by the user (`--force` / interactive override).
+pub fn generate_continuation_prompt_with_options(
+    detail: &HandoffDetail,
+    package_dir: &Path,
+    conflicts_acknowledged: bool,
+) -> String {
+    let acknowledged =
+        conflicts_acknowledged && detail.validation.status == PreflightStatus::Blocked;
+    let status_line = if acknowledged {
+        "Blocked (conflicts acknowledged by user)".to_string()
+    } else {
+        format!("{:?}", detail.validation.status)
+    };
+    let ack_rule = if acknowledged {
+        "\n12. The user has already acknowledged the preflight conflicts listed below; do not stop to ask about those listed conflicts unless you discover a new, unrecorded blocker."
+    } else {
+        ""
+    };
+    let stop_rule = if acknowledged {
+        "If you discover a NEW, unrecorded critical conflict or blocker, output the full preflight details (project/branch, working tree, instructions, tasks, failed attempts, conflicts/uncertainties, proposed next action) and stop to ask for clarification.\nOtherwise, present the concise preflight summary (3-4 bullets: repo & branch, working tree status, completed vs pending tasks, proposed next action) and ask for user approval before editing any code."
+    } else {
+        "If a critical conflict exists, output the full preflight details (project/branch, working tree, instructions, tasks, failed attempts, conflicts/uncertainties, proposed next action) and stop to ask for clarification.\nIf preflight passes, present a concise preflight summary (3-4 bullets: repo & branch, working tree status, completed vs pending tasks, proposed next action) and ask for user approval before editing any code."
+    };
+
     format!(
         r#"You are continuing an existing software development task via xm-relay.
 Target agent: {target}
 Handoff package directory: {pkg}
-Preflight status: {status:?}
+Preflight status: {status_line}
 
 Read the handoff package before making any changes.
 
@@ -1322,26 +1618,15 @@ Rules:
 8. Distinguish completed work from reported or inferred work.
 9. Identify missing context and contradictions.
 10. Do not begin implementation until preflight is complete.
-11. Match the user's language, tone, and communication style shown in User Requirements below (unless project instructions specify otherwise).
+11. Match the user's language, tone, and communication style shown in User Requirements below (unless project instructions specify otherwise).{ack_rule}
 
-First produce:
-- Project and branch confirmation.
-- Working tree summary.
-- Relevant project instructions.
-- Verified completed tasks.
-- Pending tasks.
-- Known failed attempts.
-- Conflicts and uncertainties.
-- Proposed next action.
-
-If a critical conflict exists, stop and ask for clarification.
-If preflight passes, continue with the highest-priority pending task.
+Response behavior:
+{stop_rule}
 
 ---
 {ctx}"#,
         target = detail.manifest.target_agent.as_str(),
         pkg = package_dir.display(),
-        status = detail.validation.status,
         root = detail.manifest.project_root,
         ctx = detail.context_md.trim()
     )
@@ -1436,5 +1721,16 @@ mod redaction_tests {
         let mut clean = Some(serde_json::json!({"a": 1}));
         assert_eq!(redact_json_field(&mut clean), 0);
         assert_eq!(clean.as_ref().unwrap(), &serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn resolve_file_in_root_treats_uri_as_outside_workspace() {
+        let r = resolve_file_in_root(Path::new("/tmp/proj"), "xd://mcp__dart_dtd");
+        assert!(!r.in_workspace);
+        assert_eq!(r.display_path, "xd://mcp__dart_dtd");
+
+        let rel = resolve_file_in_root(Path::new("/tmp/proj"), "lib/main.dart");
+        assert!(rel.in_workspace);
+        assert_eq!(rel.display_path, "lib/main.dart");
     }
 }
