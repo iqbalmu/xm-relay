@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
 # xm-relay installer
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | sh
 #
 # Environment variables:
 #   XM_RELAY_INSTALL_DIR  Target directory for the binary (default: ~/.local/bin)
 #   XM_RELAY_VERSION      Specific release tag to install (default: latest)
-#   XM_RELAY_REPO         GitHub owner/repo (default: iqbalmu/xm-relay)
+#   XM_RELAY_REPO         GitHub owner/repo (default: iqbalmu/xmrelay)
 
 set -eu
 
-REPO="${XM_RELAY_REPO:-iqbalmu/xm-relay}"
+REPO="${XM_RELAY_REPO:-iqbalmu/xmrelay}"
 INSTALL_DIR="${XM_RELAY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${XM_RELAY_VERSION:-latest}"
 BIN_NAME="xmrelay"

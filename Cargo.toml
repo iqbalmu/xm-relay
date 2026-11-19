@@ -7,8 +7,8 @@ members = ["crates/core", "crates/cli", "crates/adapters/opencode", "crates/adap
 version = "0.1.3"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/iqbalmu/xm-relay"
-homepage = "https://github.com/iqbalmu/xm-relay"
+repository = "https://github.com/iqbalmu/xmrelay"
+homepage = "https://github.com/iqbalmu/xmrelay"
 
 [workspace.dependencies]
 xm-relay-core = { path = "crates/core" }

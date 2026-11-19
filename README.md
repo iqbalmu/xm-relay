@@ -5,7 +5,7 @@
 **Cross-agent session handoff & preflight verification for AI coding agents.**  
 *Never lose work. Never silently lose context. Always verify before continuing.*
 
-[![CI](https://github.com/iqbalmu/xm-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/iqbalmu/xm-relay/actions/workflows/ci.yml)
+[![CI](https://github.com/iqbalmu/xmrelay/actions/workflows/ci.yml/badge.svg)](https://github.com/iqbalmu/xmrelay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](rust-toolchain.toml)
 
@@ -35,7 +35,7 @@ When you hit a usage limit or switch models across AI coding agents (**OpenCode*
 Downloads the latest prebuilt binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `~/.local/bin/xm-relay` (automatically falls back to `cargo install` if no prebuilt release is published yet):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | sh
 ```
 
 <details>
@@ -46,24 +46,24 @@ curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | 
 xm-relay update
 
 # Or customize the target directory during install:
-curl -fsSL https://raw.githubusercontent.com/iqbalmu/xm-relay/main/install.sh | XM_RELAY_INSTALL_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | XM_RELAY_INSTALL_DIR=/usr/local/bin sh
 ```
 </details>
 
 ### Option 2: `cargo install` (From GitHub)
 ```bash
-cargo install --git https://github.com/iqbalmu/xm-relay.git --locked xm-relay
+cargo install --git https://github.com/iqbalmu/xmrelay.git --locked xm-relay
 ```
 
 ### Option 3: `cargo-binstall`
 ```bash
-cargo binstall --git https://github.com/iqbalmu/xm-relay xm-relay
+cargo binstall --git https://github.com/iqbalmu/xmrelay xm-relay
 ```
 
 ### Option 4: Build from Source
 ```bash
-git clone https://github.com/iqbalmu/xm-relay.git
-cd xm-relay
+git clone https://github.com/iqbalmu/xmrelay.git
+cd xmrelay
 cargo install --path crates/cli
 ```
 
