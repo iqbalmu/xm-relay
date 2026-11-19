@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use xm_relay_repository::{discover_instructions, sha256_hex, InstructionKind};
+use xmrelay_repository::{discover_instructions, sha256_hex, InstructionKind};
 
 fn tmp(tag: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("xmr-ins-{}-{tag}", std::process::id()));

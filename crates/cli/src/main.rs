@@ -3,14 +3,14 @@ mod interactive;
 use clap::{Parser, Subcommand};
 use sha2::Digest;
 use std::process::ExitCode;
-use xm_relay_adapter_antigravity::AntigravityAdapter;
-use xm_relay_adapter_omp::OmpAdapter;
-use xm_relay_adapter_opencode::OpenCodeAdapter;
-use xm_relay_checkpoint as ckpt;
-use xm_relay_core::{AgentAdapter, AgentId, SessionFilter};
-use xm_relay_handoff as ho;
-use xm_relay_repository as repo;
-use xm_relay_security as sec;
+use xmrelay_adapter_antigravity::AntigravityAdapter;
+use xmrelay_adapter_omp::OmpAdapter;
+use xmrelay_adapter_opencode::OpenCodeAdapter;
+use xmrelay_checkpoint as ckpt;
+use xmrelay_core::{AgentAdapter, AgentId, SessionFilter};
+use xmrelay_handoff as ho;
+use xmrelay_repository as repo;
+use xmrelay_security as sec;
 
 #[derive(Parser)]
 #[command(
@@ -66,7 +66,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Update xm-relay to the latest version from GitHub
+    /// Update xmrelay to the latest version from GitHub
     Update {
         /// Specific release tag to install (defaults to latest)
         #[arg(long, default_value = "latest")]
@@ -1197,7 +1197,7 @@ fn release_target() -> Result<&'static str, String> {
         ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
         (os, arch) => Err(format!(
-            "no prebuilt release for {arch}-{os}; use cargo install --git https://github.com/iqbalmu/xm-relay.git"
+            "no prebuilt release for {arch}-{os}; use cargo install --git https://github.com/iqbalmu/xmrelay.git"
         )),
     }
 }
@@ -1205,9 +1205,9 @@ fn release_target() -> Result<&'static str, String> {
 fn release_asset_url(version: &str, suffix: &str) -> String {
     let asset = format!("xmrelay-{}{suffix}", release_target().unwrap_or_default());
     if version == "latest" {
-        format!("https://github.com/iqbalmu/xm-relay/releases/latest/download/{asset}")
+        format!("https://github.com/iqbalmu/xmrelay/releases/latest/download/{asset}")
     } else {
-        format!("https://github.com/iqbalmu/xm-relay/releases/download/{version}/{asset}")
+        format!("https://github.com/iqbalmu/xmrelay/releases/download/{version}/{asset}")
     }
 }
 
@@ -1254,7 +1254,7 @@ fn update_cmd(version: &str) -> Result<(), String> {
         .ok_or_else(|| "binary has no parent directory".to_string())?
         .to_path_buf();
     println!(
-        "Updating xm-relay in {} (target version: {})...",
+        "Updating xmrelay in {} (target version: {})...",
         exe_dir.display(),
         version
     );
@@ -1317,7 +1317,7 @@ fn update_cmd(version: &str) -> Result<(), String> {
         format!("cannot replace binary: {e}")
     })?;
     println!(
-        "Updated xm-relay at {} (backup kept at {}).",
+        "Updated xmrelay at {} (backup kept at {}).",
         exe.display(),
         bak_path.display()
     );

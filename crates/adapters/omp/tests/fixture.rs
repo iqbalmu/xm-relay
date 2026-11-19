@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use xm_relay_adapter_omp::OmpAdapter;
-use xm_relay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
+use xmrelay_adapter_omp::OmpAdapter;
+use xmrelay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
 
 #[test]
 fn user_message_without_text_payload_is_lossy() {

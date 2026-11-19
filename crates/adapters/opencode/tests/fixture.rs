@@ -1,6 +1,6 @@
 use rusqlite::Connection;
-use xm_relay_adapter_opencode::OpenCodeAdapter;
-use xm_relay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
+use xmrelay_adapter_opencode::OpenCodeAdapter;
+use xmrelay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
 
 fn drift_db() -> (tempdir::Dir, OpenCodeAdapter) {
     let sql = include_str!("../../../../fixtures/opencode/basic.sql");

@@ -1,6 +1,6 @@
 <div align="center">
 
-# xm-relay
+# xmrelay
 
 **Cross-agent session handoff & preflight verification for AI coding agents.**  
 *Never lose work. Never silently lose context. Always verify before continuing.*
@@ -15,11 +15,11 @@
 
 ---
 
-## Why `xm-relay`?
+## Why `xmrelay`?
 
 When you hit a usage limit or switch models across AI coding agents (**OpenCode**, **Antigravity CLI**, **Oh My Pi**), copy-pasting the last few messages is unreliable. Agent summaries can hallucinate completed work, miss failed attempts, or contradict the actual state of your Git working tree.
 
-`xm-relay` is a **local-first, strictly read-only** CLI tool that bridges coding agents safely:
+`xmrelay` is a **local-first, strictly read-only** CLI tool that bridges coding agents safely:
 
 1. **Discovers & Normalizes Sessions** across `opencode`, `antigravity-cli`, and `omp` without ever modifying source session databases or files.
 2. **Inspects Live Git State** (branch, HEAD, staged/unstaged/untracked files, binary-safe diffs, and `AGENTS.md`/`CLAUDE.md` instructions) with `GIT_OPTIONAL_LOCKS=0` so `.git/index` is never mutated.
@@ -32,7 +32,7 @@ When you hit a usage limit or switch models across AI coding agents (**OpenCode*
 ## 📦 Installation
 
 ### Option 1: One-Liner Script (Linux & macOS)
-Downloads the latest prebuilt binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `~/.local/bin/xm-relay` (automatically falls back to `cargo install` if no prebuilt release is published yet):
+Downloads the latest prebuilt binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `~/.local/bin/xmrelay` (automatically falls back to `cargo install` if no prebuilt release is published yet):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | sh
@@ -43,21 +43,21 @@ curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | s
 
 ```bash
 # Self-update to the latest release in-place:
-xm-relay update
+xmrelay update
 
 # Or customize the target directory during install:
-curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | XM_RELAY_INSTALL_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | XMRELAY_INSTALL_DIR=/usr/local/bin sh
 ```
 </details>
 
 ### Option 2: `cargo install` (From GitHub)
 ```bash
-cargo install --git https://github.com/iqbalmu/xmrelay.git --locked xm-relay
+cargo install --git https://github.com/iqbalmu/xmrelay.git --locked xmrelay
 ```
 
 ### Option 3: `cargo-binstall`
 ```bash
-cargo binstall --git https://github.com/iqbalmu/xmrelay xm-relay
+cargo binstall --git https://github.com/iqbalmu/xmrelay xmrelay
 ```
 
 ### Option 4: Build from Source
@@ -72,10 +72,10 @@ cargo install --path crates/cli
 ## 🚀 Quick Start
 
 ### Interactive Arrow-Key Mode (Recommended)
-Simply run `xm-relay` with no arguments inside your project directory:
+Simply run `xmrelay` with no arguments inside your project directory:
 
 ```bash
-xm-relay
+xmrelay
 ```
 
 Use **`↑`/`↓` (or `j`/`k`) + `Enter`** to navigate the streamlined interactive flow:
@@ -88,19 +88,19 @@ Use **`↑`/`↓` (or `j`/`k`) + `Enter`** to navigate the streamlined interacti
 
 ```bash
 # 1. Check detected agents and current repository status
-xm-relay status
+xmrelay status
 
 # 2. Find your latest session ID in the active directory (add -g for global)
-xm-relay sessions list --agent opencode --limit 5
+xmrelay sessions list --agent opencode --limit 5
 
 # 3. Build a verified, secret-redacted handoff package
-xm-relay handoff create --from opencode --session <SESSION_ID> --to omp
+xmrelay handoff create --from opencode --session <SESSION_ID> --to omp
 
 # 4. Generate the preflight continuation prompt for the target agent
-xm-relay continue <HANDOFF_ID>
+xmrelay continue <HANDOFF_ID>
 ```
 
-> **Tip:** Pipe `xm-relay continue <HANDOFF_ID>` directly to your clipboard (`| wl-copy`, `| xclip -sel clip`, or `| pbcopy`) and paste it into your target coding agent. If a critical conflict is detected, `xm-relay continue` exits with code `2` and refuses to emit a prompt until the conflict is resolved.
+> **Tip:** Pipe `xmrelay continue <HANDOFF_ID>` directly to your clipboard (`| wl-copy`, `| xclip -sel clip`, or `| pbcopy`) and paste it into your target coding agent. If a critical conflict is detected, `xmrelay continue` exits with code `2` and refuses to emit a prompt until the conflict is resolved.
 
 ---
 
@@ -110,28 +110,28 @@ Every subcommand supports `--help` and most provide `--json` for scripting.
 
 | Command | Description |
 |---|---|
-| `xm-relay update` | Self-update in-place: downloads the release tarball, verifies its published SHA-256, swaps the binary atomically, keeps one `.xmrelay.bak` backup |
-| `xm-relay agents` | Detect installed coding agents and their session data paths (`--json`) |
-| `xm-relay status [path]` | Summary of detected agents, live Git state, checkpoints, and handoffs |
-| `xm-relay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`, `--json`) |
-| `xm-relay sessions search <query>` | Search sessions in the active directory (`-g`/`--global` for all dirs) |
-| `xm-relay sessions inspect <id>` | Inspect normalized events and transparency `parse_report` |
-| `xm-relay project inspect [path]` | Read-only Git status, diff stats, untracked inventory, and recent commits |
-| `xm-relay project instructions [path]` | Discover `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, Copilot rules |
-| `xm-relay project scan [path]` | Heuristic secret scan across diffs, untracked files, and instructions (exits `2` on hit) |
-| `xm-relay checkpoint create [path]` | Snapshot Git status, instructions, and redacted patch with SHA-256 checksums |
-| `xm-relay checkpoint list \| inspect \| diff` | List checkpoints, verify artifact checksums, or compare live workspace drift |
-| `xm-relay handoff create` | Build a portable handoff package (`--from`, `--session`, `--to`, `--project`) |
-| `xm-relay handoff list \| inspect \| validate` | View handoff history, inspect `context.md`, or re-validate against live disk |
-| `xm-relay handoff export <id> <dest>` | Copy a checksum-verified handoff package to an external directory |
-| `xm-relay history` | Shortcut to list recent handoff packages |
-| `xm-relay continue <id>` | Re-validate and emit the target-agent preflight continuation prompt |
+| `xmrelay update` | Self-update in-place: downloads the release tarball, verifies its published SHA-256, swaps the binary atomically, keeps one `.xmrelay.bak` backup |
+| `xmrelay agents` | Detect installed coding agents and their session data paths (`--json`) |
+| `xmrelay status [path]` | Summary of detected agents, live Git state, checkpoints, and handoffs |
+| `xmrelay sessions list` | List sessions for the active directory (`-g`/`--global` for all dirs, `--agent`, `--limit`, `--json`) |
+| `xmrelay sessions search <query>` | Search sessions in the active directory (`-g`/`--global` for all dirs) |
+| `xmrelay sessions inspect <id>` | Inspect normalized events and transparency `parse_report` |
+| `xmrelay project inspect [path]` | Read-only Git status, diff stats, untracked inventory, and recent commits |
+| `xmrelay project instructions [path]` | Discover `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, Copilot rules |
+| `xmrelay project scan [path]` | Heuristic secret scan across diffs, untracked files, and instructions (exits `2` on hit) |
+| `xmrelay checkpoint create [path]` | Snapshot Git status, instructions, and redacted patch with SHA-256 checksums |
+| `xmrelay checkpoint list \| inspect \| diff` | List checkpoints, verify artifact checksums, or compare live workspace drift |
+| `xmrelay handoff create` | Build a portable handoff package (`--from`, `--session`, `--to`, `--project`) |
+| `xmrelay handoff list \| inspect \| validate` | View handoff history, inspect `context.md`, or re-validate against live disk |
+| `xmrelay handoff export <id> <dest>` | Copy a checksum-verified handoff package to an external directory |
+| `xmrelay history` | Shortcut to list recent handoff packages |
+| `xmrelay continue <id>` | Re-validate and emit the target-agent preflight continuation prompt |
 
 ---
 
 ## 📂 Portable Handoff Package Layout
 
-Packages are stored in `~/.local/share/xm-relay/handoffs/<handoff-id>/` (or `$XDG_DATA_HOME/xm-relay/handoffs/`) and have zero dependency on any internal database:
+Packages are stored in `~/.local/share/xmrelay/handoffs/<handoff-id>/` (or `$XDG_DATA_HOME/xmrelay/handoffs/`) and have zero dependency on any internal database:
 
 ```text
 <handoff-id>/
@@ -160,8 +160,8 @@ Packages are stored in `~/.local/share/xm-relay/handoffs/<handoff-id>/` (or `$XD
 
 ## 🔒 Security, Privacy & Known Limitations
 
-- **Strictly Read-Only:** `xm-relay` never writes to agent databases/transcripts and never runs destructive Git operations (`reset`, `clean`, `checkout`, `stash`, `commit`).
-- **Heuristic Secret Redaction:** The scanner in `xm-relay-security` is best-effort. **A clean scan is not proof that a package is free of secrets.** Always review `context.md` and `patches/working-tree.patch` before sharing a handoff package externally.
+- **Strictly Read-Only:** `xmrelay` never writes to agent databases/transcripts and never runs destructive Git operations (`reset`, `clean`, `checkout`, `stash`, `commit`).
+- **Heuristic Secret Redaction:** The scanner in `xmrelay-security` is best-effort. **A clean scan is not proof that a package is free of secrets.** Always review `context.md` and `patches/working-tree.patch` before sharing a handoff package externally.
 - **Continuation Prompt via argv:** Launching a target agent with a pre-loaded prompt passes it as a command-line argument, so it is visible system-wide via `ps`/`/proc/<pid>/cmdline` until the target process replaces it. This is a limitation of the target CLIs' flag-based prompt handoff; use "print to stdout" or "copy to clipboard" in shared environments.
 - **Untracked Files:** `working-tree.patch` contains tracked file diffs only. Untracked files are inventoried with size and SHA-256 in `repository-state.json` (and symlinks are never followed).
 - **Antigravity CLI Transcripts:** Conversations without a JSONL transcript in `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/` (i.e. opaque SQLite blobs only) are skipped to uphold fail-safe parsing.
@@ -178,7 +178,7 @@ Packages are stored in `~/.local/share/xm-relay/handoffs/<handoff-id>/` (or `$XD
 | `crates/security` | Heuristic secret detection and redaction |
 | `crates/checkpoint` | Workspace checkpoint builder, checksum verifier, and drift comparator |
 | `crates/handoff` | Evidence-based handoff engine, preflight validator, and prompt generator |
-| `crates/cli` | `xm-relay` CLI binary & interactive arrow-key wizard |
+| `crates/cli` | `xmrelay` CLI binary & interactive arrow-key wizard |
 
 ---
 

@@ -9,11 +9,11 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use xm_relay_repository::{
+use xmrelay_repository::{
     discover_instructions, inspect, sha256_hex, tracked_patch, InstructionSet, RepoError,
     RepositoryState,
 };
-use xm_relay_security::{redact_bytes, redact_text, sensitive_file, Finding, SensitiveFile};
+use xmrelay_security::{redact_bytes, redact_text, sensitive_file, Finding, SensitiveFile};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -99,12 +99,33 @@ pub struct WorkspaceDrift {
     pub untracked_unverified: Vec<String>,
 }
 
-/// Default storage location: `$XDG_DATA_HOME/xm-relay/checkpoints` or `~/.local/share/xm-relay/checkpoints`.
+/// Default storage location: `$XDG_DATA_HOME/xmrelay/checkpoints` or `~/.local/share/xmrelay/checkpoints`.
 pub fn default_store_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(base.join("xm-relay/checkpoints"))
+    migrate_legacy_store(&base, "xm-relay/checkpoints", "xmrelay/checkpoints");
+    Some(base.join("xmrelay/checkpoints"))
+}
+
+/// Best-effort one-time rename of the pre-`xmrelay` store directory; on failure
+/// the legacy store is left untouched and a fresh store starts empty.
+fn migrate_legacy_store(base: &Path, from: &str, to: &str) {
+    let old = base.join(from);
+    let new = base.join(to);
+    if !old.exists() || new.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::rename(&old, &new).is_ok() {
+        // Drop the now-empty legacy parent (`xm-relay/`); no-op if other
+        // content or the removal fails.
+        if let Some(legacy) = old.parent() {
+            let _ = fs::remove_dir(legacy);
+        }
+    }
 }
 
 fn valid_id(id: &str) -> bool {
@@ -192,16 +213,16 @@ pub fn create_checkpoint(
             project_path.display().to_string(),
         ));
     }
-    let repo_redactions = xm_relay_repository::redact_free_text(&mut repo_state);
+    let repo_redactions = xmrelay_repository::redact_free_text(&mut repo_state);
     let root_str = repo_state.root.clone().unwrap_or_default();
     let root = PathBuf::from(&root_str);
 
     let mut instructions = discover_instructions(&root);
 
     let mut raw_patch = tracked_patch(&root)?;
-    let patch_truncated = raw_patch.len() > xm_relay_repository::MAX_PATCH_BYTES;
+    let patch_truncated = raw_patch.len() > xmrelay_repository::MAX_PATCH_BYTES;
     if patch_truncated {
-        raw_patch.truncate(xm_relay_repository::MAX_PATCH_BYTES);
+        raw_patch.truncate(xmrelay_repository::MAX_PATCH_BYTES);
     }
     let (redacted_patch, patch_redactions) = redact_bytes(&raw_patch);
 
@@ -209,7 +230,7 @@ pub fn create_checkpoint(
     if patch_truncated {
         warnings.push(format!(
             "working-tree.patch truncated at {} MiB",
-            xm_relay_repository::MAX_PATCH_BYTES / (1024 * 1024)
+            xmrelay_repository::MAX_PATCH_BYTES / (1024 * 1024)
         ));
     }
     warnings.extend(instructions.warnings.clone());

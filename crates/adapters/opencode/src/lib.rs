@@ -6,8 +6,8 @@ mod time;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use xm_relay_core::session::{EventSourceRef, ProjectRef, SessionSource, UnsupportedEvent};
-use xm_relay_core::{
+use xmrelay_core::session::{EventSourceRef, ProjectRef, SessionSource, UnsupportedEvent};
+use xmrelay_core::{
     Actor, AdapterCapabilities, AdapterError, AdapterResult, AgentAdapter, AgentId, AgentInfo,
     AgentInstallation, Event, EventContent, EventKind, ParseReport, ParseStatus, Session,
     SessionFilter, SessionSummary, ToolInfo, ToolStatus,
@@ -121,7 +121,7 @@ impl AgentAdapter for OpenCodeAdapter {
             let s = match row {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("xm-relay: warning: skipping unreadable opencode session row: {e}");
+                    eprintln!("xmrelay: warning: skipping unreadable opencode session row: {e}");
                     continue;
                 }
             };

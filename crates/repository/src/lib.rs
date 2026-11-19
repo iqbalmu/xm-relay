@@ -47,18 +47,18 @@ pub fn redact_free_text(state: &mut RepositoryState) -> usize {
     let mut count = 0;
     for slot in [&mut state.branch, &mut state.upstream] {
         if let Some(s) = slot {
-            let (clean, f) = xm_relay_security::redact_text(s);
+            let (clean, f) = xmrelay_security::redact_text(s);
             count += f.len();
             *slot = Some(clean);
         }
     }
     for c in &mut state.recent_commits {
-        let (clean, f) = xm_relay_security::redact_text(&c.subject);
+        let (clean, f) = xmrelay_security::redact_text(&c.subject);
         count += f.len();
         c.subject = clean;
     }
     for w in &mut state.warnings {
-        let (clean, f) = xm_relay_security::redact_text(w);
+        let (clean, f) = xmrelay_security::redact_text(w);
         count += f.len();
         *w = clean;
     }

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::path::PathBuf;
-use xm_relay_adapter_antigravity::AntigravityAdapter;
-use xm_relay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
+use xmrelay_adapter_antigravity::AntigravityAdapter;
+use xmrelay_core::{AgentAdapter, EventKind, ParseStatus, SessionFilter, ToolStatus};
 
 const A: &str = "aaaa1111-0000-0000-0000-000000000001";
 const B: &str = "bbbb2222-0000-0000-0000-000000000002";

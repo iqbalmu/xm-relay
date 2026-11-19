@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use xm_relay_repository::{inspect, sha256_hex, tracked_patch};
+use xmrelay_repository::{inspect, sha256_hex, tracked_patch};
 
 struct Tmp(PathBuf);
 impl Tmp {
@@ -193,7 +193,7 @@ fn symlinks_are_not_followed() {
 
 #[test]
 fn redact_free_text_cleans_user_controlled_fields() {
-    use xm_relay_repository::{redact_free_text, CommitInfo, RepositoryState};
+    use xmrelay_repository::{redact_free_text, CommitInfo, RepositoryState};
     let aws = format!("AKIA{}", "A".repeat(16));
     let stripe = format!("sk_live_{}", "a".repeat(24));
     let ghp = format!("ghp_{}", "A".repeat(36));

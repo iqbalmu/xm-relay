@@ -39,7 +39,7 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --locked --package xm-relay --target ${{ matrix.target }}
+        run: cargo build --release --locked --package xmrelay --target ${{ matrix.target }}
       - name: Package archive and SHA-256 checksum
         run: |
           asset="xmrelay-${{ matrix.target }}.tar.gz"

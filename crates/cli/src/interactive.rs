@@ -1,4 +1,4 @@
-//! Streamlined interactive arrow-key CLI workflow for `xm-relay`.
+//! Streamlined interactive arrow-key CLI workflow for `xmrelay`.
 
 use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use xm_relay_core::{Actor, AgentAdapter, AgentId, EventKind, SessionFilter, SessionSummary};
+use xmrelay_core::{Actor, AgentAdapter, AgentId, EventKind, SessionFilter, SessionSummary};
 
 /// RAII guard: leaves raw mode and shows the cursor on drop, so `?` errors,
 /// panics, and early returns can never leave the terminal wedged.
@@ -43,7 +43,7 @@ pub fn install_panic_hook() {
         eprintln!("{info}");
     }));
 }
-use xm_relay_handoff as ho;
+use xmrelay_handoff as ho;
 
 /// Sentinel error returned when the user hits Ctrl-C in an interactive menu;
 /// `main` maps it to exit code 130 (shell convention) without an error line.
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn test_base64_encode() {
-        assert_eq!(base64_encode(b"xm-relay"), "eG0tcmVsYXk=");
+        assert_eq!(base64_encode(b"xmrelay"), "eG1yZWxheQ==");
         assert_eq!(base64_encode(b"abc"), "YWJj");
     }
 }

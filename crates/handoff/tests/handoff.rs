@@ -2,12 +2,12 @@ use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use xm_relay_core::session::{EventSourceRef, ProjectRef, SessionSource};
-use xm_relay_core::{
+use xmrelay_core::session::{EventSourceRef, ProjectRef, SessionSource};
+use xmrelay_core::{
     Actor, AgentId, AgentInfo, Classification, Confidence, Event, EventContent, EventKind,
     ParseReport, ParseStatus, Session, ToolInfo, ToolStatus,
 };
-use xm_relay_handoff::{
+use xmrelay_handoff::{
     create_handoff, export_handoff, generate_continuation_prompt, list_handoffs, validate_handoff,
     PreflightStatus,
 };
@@ -191,7 +191,7 @@ fn builds_verifies_redacts_and_detects_missing_file_conflict() {
     assert!(!unack_prompt.contains("already acknowledged"));
 
     let ack_prompt =
-        xm_relay_handoff::generate_continuation_prompt_with_options(&blocked, &blocked_pkg, true);
+        xmrelay_handoff::generate_continuation_prompt_with_options(&blocked, &blocked_pkg, true);
     assert!(ack_prompt.contains("Preflight status: Blocked (conflicts acknowledged by user)"));
     assert!(ack_prompt.contains("already acknowledged the preflight conflicts"));
     assert!(ack_prompt.contains("ask for user approval before editing any code"));

@@ -1,5 +1,5 @@
 [package]
-name = "xm-relay-repository"
+name = "xmrelay-repository"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,4 +7,4 @@ license.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
-xm-relay-security.workspace = true
+xmrelay-security.workspace = true

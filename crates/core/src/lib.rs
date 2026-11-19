@@ -1,4 +1,4 @@
-//! Vendor-neutral domain model for xm-relay. Must not depend on any adapter.
+//! Vendor-neutral domain model for xmrelay. Must not depend on any adapter.
 
 pub mod adapter;
 pub mod agent;

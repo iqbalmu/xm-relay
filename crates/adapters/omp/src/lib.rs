@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use xm_relay_core::session::{EventSourceRef, ProjectRef, SessionSource, UnsupportedEvent};
-use xm_relay_core::{
+use xmrelay_core::session::{EventSourceRef, ProjectRef, SessionSource, UnsupportedEvent};
+use xmrelay_core::{
     Actor, AdapterCapabilities, AdapterError, AdapterResult, AgentAdapter, AgentId, AgentInfo,
     AgentInstallation, Event, EventContent, EventKind, ParseReport, ParseStatus, Session,
     SessionFilter, SessionSummary, ToolInfo, ToolStatus,
@@ -100,7 +100,7 @@ impl AgentAdapter for OmpAdapter {
         for path in self.files()? {
             let Ok(f) = File::open(&path) else {
                 eprintln!(
-                    "xm-relay: warning: skipping unreadable session file: {}",
+                    "xmrelay: warning: skipping unreadable session file: {}",
                     path.display()
                 );
                 continue;

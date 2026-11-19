@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Agents supported (or planned) by xm-relay, in adapter implementation order.
+/// Agents supported (or planned) by xmrelay, in adapter implementation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentId {
     #[serde(rename = "opencode")]

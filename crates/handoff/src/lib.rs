@@ -14,15 +14,15 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use xm_relay_core::{
+use xmrelay_core::{
     AgentId, Classification, Confidence, EventKind, Evidence, EvidenceItem, Session, SourceRef,
     SourceType, Task, TaskState, TaskStatus, ToolStatus, Verification,
 };
-use xm_relay_repository::{
+use xmrelay_repository::{
     discover_instructions, inspect, redact_free_text, sha256_hex, tracked_patch, InstructionSet,
     RepoError, RepositoryState,
 };
-use xm_relay_security::{redact_bytes, redact_text, sensitive_file, SensitiveFile};
+use xmrelay_security::{redact_bytes, redact_text, sensitive_file, SensitiveFile};
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
@@ -148,12 +148,33 @@ pub struct HandoffDetail {
     pub context_md: String,
 }
 
-/// Default storage location: `$XDG_DATA_HOME/xm-relay/handoffs` or `~/.local/share/xm-relay/handoffs`.
+/// Default storage location: `$XDG_DATA_HOME/xmrelay/handoffs` or `~/.local/share/xmrelay/handoffs`.
 pub fn default_store_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(base.join("xm-relay/handoffs"))
+    migrate_legacy_store(&base, "xm-relay/handoffs", "xmrelay/handoffs");
+    Some(base.join("xmrelay/handoffs"))
+}
+
+/// Best-effort one-time rename of the pre-`xmrelay` store directory; on failure
+/// the legacy store is left untouched and a fresh store starts empty.
+fn migrate_legacy_store(base: &Path, from: &str, to: &str) {
+    let old = base.join(from);
+    let new = base.join(to);
+    if !old.exists() || new.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::rename(&old, &new).is_ok() {
+        // Drop the now-empty legacy parent (`xm-relay/`); no-op if other
+        // content or the removal fails.
+        if let Some(legacy) = old.parent() {
+            let _ = fs::remove_dir(legacy);
+        }
+    }
 }
 
 fn valid_rel_path(p: &str) -> bool {
@@ -318,7 +339,7 @@ fn is_short_affirmative(s: &str) -> bool {
 }
 
 fn was_deleted_in_session_after(
-    events: &[xm_relay_core::Event],
+    events: &[xmrelay_core::Event],
     after_idx: usize,
     display_path: &str,
 ) -> bool {
@@ -388,6 +409,7 @@ struct ResolvedFile {
 fn is_agent_internal_artifact(display_path: &str) -> bool {
     display_path.contains("/.gemini/antigravity-cli/brain/")
         || display_path.contains("/.omp/agent/")
+        || display_path.contains("/.local/share/xmrelay/")
         || display_path.contains("/.local/share/xm-relay/")
         || display_path.contains("/.local/share/opencode/")
 }
@@ -1245,9 +1267,9 @@ pub fn create_handoff(
     } else {
         Vec::new()
     };
-    let patch_truncated = raw_patch.len() > xm_relay_repository::MAX_PATCH_BYTES;
+    let patch_truncated = raw_patch.len() > xmrelay_repository::MAX_PATCH_BYTES;
     if patch_truncated {
-        raw_patch.truncate(xm_relay_repository::MAX_PATCH_BYTES);
+        raw_patch.truncate(xmrelay_repository::MAX_PATCH_BYTES);
     }
     let (redacted_patch, patch_findings) = redact_bytes(&raw_patch);
     redactions_count += patch_findings.len();
@@ -1284,7 +1306,7 @@ pub fn create_handoff(
     if patch_truncated {
         warnings.push(format!(
             "working-tree.patch truncated at {} MiB",
-            xm_relay_repository::MAX_PATCH_BYTES / (1024 * 1024)
+            xmrelay_repository::MAX_PATCH_BYTES / (1024 * 1024)
         ));
     }
     warnings.extend(instructions.warnings.clone());
@@ -1677,7 +1699,7 @@ pub fn generate_continuation_prompt_with_options(
     };
 
     format!(
-        r#"You are continuing an existing software development task via xm-relay.
+        r#"You are continuing an existing software development task via xmrelay.
 Target agent: {target}
 Handoff package directory: {pkg}
 Preflight status: {status_line}

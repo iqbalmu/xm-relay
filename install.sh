@@ -1,22 +1,22 @@
 #!/usr/bin/env sh
-# xm-relay installer
+# xmrelay installer
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/iqbalmu/xmrelay/main/install.sh | sh
 #
 # Environment variables:
-#   XM_RELAY_INSTALL_DIR  Target directory for the binary (default: ~/.local/bin)
-#   XM_RELAY_VERSION      Specific release tag to install (default: latest)
-#   XM_RELAY_REPO         GitHub owner/repo (default: iqbalmu/xmrelay)
+#   XMRELAY_INSTALL_DIR  Target directory for the binary (default: ~/.local/bin)
+#   XMRELAY_VERSION      Specific release tag to install (default: latest)
+#   XMRELAY_REPO         GitHub owner/repo (default: iqbalmu/xmrelay)
 
 set -eu
 
-REPO="${XM_RELAY_REPO:-iqbalmu/xmrelay}"
-INSTALL_DIR="${XM_RELAY_INSTALL_DIR:-$HOME/.local/bin}"
-VERSION="${XM_RELAY_VERSION:-latest}"
+REPO="${XMRELAY_REPO:-iqbalmu/xmrelay}"
+INSTALL_DIR="${XMRELAY_INSTALL_DIR:-$HOME/.local/bin}"
+VERSION="${XMRELAY_VERSION:-latest}"
 BIN_NAME="xmrelay"
 
 say() {
-    printf '[xm-relay] %s\n' "$*" >&2
+    printf '[xmrelay] %s\n' "$*" >&2
 }
 
 err() {
@@ -70,7 +70,7 @@ verify_sha256() {
 fallback_cargo() {
     if need_cmd cargo; then
         say "No prebuilt release binary found; falling back to building from source with cargo..."
-        cargo install --git "https://github.com/$REPO.git" --locked xm-relay
+        cargo install --git "https://github.com/$REPO.git" --locked xmrelay
         exit 0
     fi
     err "prebuilt release binary not found for this platform/version and 'cargo' is not installed"
@@ -89,7 +89,7 @@ main() {
         base_url="https://github.com/${REPO}/releases/download/${VERSION}"
     fi
 
-    tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t xm-relay)"
+    tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t xmrelay)"
     trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
     say "Downloading ${asset} (${VERSION}) from ${REPO}..."

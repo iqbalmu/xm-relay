@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use xm_relay_checkpoint::{
+use xmrelay_checkpoint::{
     compare_with_workspace, create_checkpoint, inspect_checkpoint, list_checkpoints,
 };
 

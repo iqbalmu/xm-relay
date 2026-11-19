@@ -834,7 +834,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xm-relay"
+name = "xmrelay"
 version = "0.1.3"
 dependencies = [
  "clap",
@@ -845,54 +845,54 @@ dependencies = [
  "sha2",
  "tar",
  "unicode-width",
- "xm-relay-adapter-antigravity",
- "xm-relay-adapter-omp",
- "xm-relay-adapter-opencode",
- "xm-relay-checkpoint",
- "xm-relay-core",
- "xm-relay-handoff",
- "xm-relay-repository",
- "xm-relay-security",
+ "xmrelay-adapter-antigravity",
+ "xmrelay-adapter-omp",
+ "xmrelay-adapter-opencode",
+ "xmrelay-checkpoint",
+ "xmrelay-core",
+ "xmrelay-handoff",
+ "xmrelay-repository",
+ "xmrelay-security",
 ]
 
 [[package]]
-name = "xm-relay-adapter-antigravity"
+name = "xmrelay-adapter-antigravity"
 version = "0.1.3"
 dependencies = [
  "rusqlite",
  "serde_json",
- "xm-relay-core",
+ "xmrelay-core",
 ]
 
 [[package]]
-name = "xm-relay-adapter-omp"
+name = "xmrelay-adapter-omp"
 version = "0.1.3"
 dependencies = [
  "serde_json",
- "xm-relay-core",
+ "xmrelay-core",
 ]
 
 [[package]]
-name = "xm-relay-adapter-opencode"
+name = "xmrelay-adapter-opencode"
 version = "0.1.3"
 dependencies = [
  "rusqlite",
  "serde_json",
- "xm-relay-core",
+ "xmrelay-core",
 ]
 
 [[package]]
-name = "xm-relay-checkpoint"
+name = "xmrelay-checkpoint"
 version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
- "xm-relay-repository",
- "xm-relay-security",
+ "xmrelay-repository",
+ "xmrelay-security",
 ]
 
 [[package]]
-name = "xm-relay-core"
+name = "xmrelay-core"
 version = "0.1.3"
 dependencies = [
  "serde",
@@ -900,27 +900,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "xm-relay-handoff"
+name = "xmrelay-handoff"
 version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
- "xm-relay-core",
- "xm-relay-repository",
- "xm-relay-security",
+ "xmrelay-core",
+ "xmrelay-repository",
+ "xmrelay-security",
 ]
 
 [[package]]
-name = "xm-relay-repository"
+name = "xmrelay-repository"
 version = "0.1.3"
 dependencies = [
  "serde",
  "sha2",
- "xm-relay-security",
+ "xmrelay-security",
 ]
 
 [[package]]
-name = "xm-relay-security"
+name = "xmrelay-security"
 version = "0.1.3"
 dependencies = [
  "regex",
