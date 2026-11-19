@@ -138,7 +138,16 @@ fn conflicts_are_reported() {
     let _ = Command::new("git")
         .arg("-C")
         .arg(&t.0)
-        .args(["merge", "other"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "other",
+        ])
         .output();
     let s = inspect(&t.0).unwrap();
     assert_eq!(s.conflicted, ["a.txt"]);
